@@ -1,10 +1,6 @@
 #!/usr/bin/env luajit
 -- config-sync.lua — sync dotfile configs from git repos into place.
 -- Target runtime: Lua 5.1 / LuaJIT (matches Neovim). See config-plan.md.
---
--- Failure philosophy: do only the validation needed to branch correctly. Any
--- other unexpected condition is allowed to error / fail; it is surfaced to the
--- user and (for per-entry work) the run continues.
 
 ----------------------------------------------------------------------
 -- Helpers
@@ -25,7 +21,7 @@ end
 
 -- Single-quote-wrap a value for the shell: ' -> '\''. Every interpolated
 -- argument passes through this, so paths with spaces/metacharacters are safe.
-local function shq(s)
+local function escape_single_quote(s)
   return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
 end
 
@@ -46,24 +42,24 @@ local function capture(cmd)
   return trim(out)
 end
 
-local function path_exists(p) return run("test -e " .. shq(p)) end
-local function is_dir(p)      return run("test -d " .. shq(p)) end
-local function is_symlink(p)  return run("test -L " .. shq(p)) end
+local function path_exists(p) return run("test -e " .. escape_single_quote(p)) end
+local function is_dir(p)      return run("test -d " .. escape_single_quote(p)) end
+local function is_symlink(p)  return run("test -L " .. escape_single_quote(p)) end
 
 local function dir_empty(p)
-  return capture("ls -A " .. shq(p) .. " 2>/dev/null") == ""
+  return capture("ls -A " .. escape_single_quote(p) .. " 2>/dev/null") == ""
 end
 
 local function read_link(p)
-  return capture("readlink " .. shq(p) .. " 2>/dev/null")
+  return capture("readlink " .. escape_single_quote(p) .. " 2>/dev/null")
 end
 
 local function git_origin(dir)
-  return capture("git -C " .. shq(dir) .. " remote get-url origin 2>/dev/null")
+  return capture("git -C " .. escape_single_quote(dir) .. " remote get-url origin 2>/dev/null")
 end
 
 local function have(bin)
-  return run("command -v " .. shq(bin) .. " >/dev/null 2>&1")
+  return run("command -v " .. escape_single_quote(bin) .. " >/dev/null 2>&1")
 end
 
 -- Compare repo URLs ignoring trailing whitespace and a trailing ".git".
@@ -183,7 +179,7 @@ end
 ----------------------------------------------------------------------
 
 local function git_clone(entry, repo, dir, ok_detail)
-  if run("git clone " .. shq(repo) .. " " .. shq(dir)) then
+  if run("git clone " .. escape_single_quote(repo) .. " " .. shq(dir)) then
     record(entry.program, "synced", ok_detail)
     return true
   end
@@ -192,7 +188,7 @@ local function git_clone(entry, repo, dir, ok_detail)
 end
 
 local function make_symlink(entry, target, dest, ok_detail)
-  if run("ln -s " .. shq(target) .. " " .. shq(dest)) then
+  if run("ln -s " .. escape_single_quote(target) .. " " .. shq(dest)) then
     record(entry.program, "synced", ok_detail)
     return true
   end
@@ -220,7 +216,7 @@ local function sync_direct(entry, dest)
   end
 
   if is_dir(dest) and norm_url(git_origin(dest)) == norm_url(repo) then
-    if run("git -C " .. shq(dest) .. " pull") then
+    if run("git -C " .. escape_single_quote(dest) .. " pull") then
       record(entry.program, "pulled", "pulled " .. dest)
     else
       fail(entry.program, "git pull", dest, "pull failed")
@@ -250,12 +246,12 @@ local function sync_symlink(entry, dest)
 
   -- 1. Bring the staging clone up to date.
   if not path_exists(staging) then
-    if not run("git clone " .. shq(repo) .. " " .. shq(staging)) then
+    if not run("git clone " .. escape_single_quote(repo) .. " " .. shq(staging)) then
       fail(entry.program, "git clone", staging, "clone failed")
       return
     end
   elseif norm_url(git_origin(staging)) == norm_url(repo) then
-    if not run("git -C " .. shq(staging) .. " pull") then
+    if not run("git -C " .. escape_single_quote(staging) .. " pull") then
       fail(entry.program, "git pull", staging, "pull failed")
       return
     end
@@ -286,7 +282,7 @@ local function sync_symlink(entry, dest)
 
   if not path_exists(dest) then
     local parent = dest:match("^(.*)/[^/]+$")
-    if parent and parent ~= "" and not run("mkdir -p " .. shq(parent)) then
+    if parent and parent ~= "" and not run("mkdir -p " .. escape_single_quote(parent)) then
       fail(entry.program, "mkdir -p", parent, "mkdir failed")
       return
     end
