@@ -41,7 +41,10 @@ luajit config-sync.lua [config.lua]
 ### What Lua's stdlib handles (no shell-out)
 
 - Backup-before-overwrite renames — `os.rename`.
-- `$HOME` lookup for `~` expansion — `os.getenv("HOME")`.
+- `~` → `$HOME` expansion via `os.getenv("HOME")`, applied to **every** path the
+  script touches (`dest`, `KNOWN_PATHS` entries, the staging root), not just
+  `dest`. This must happen in Lua: because `shq` single-quotes arguments, the
+  shell never expands `~` itself.
 - Backup timestamps — `os.date("%Y%m%d-%H%M%S")` (colon-free, sortable).
 - Removing a symlink or an empty directory — `os.remove` (POSIX `remove()`
   handles both; it won't touch a non-empty dir).
@@ -236,7 +239,14 @@ For each entry, in order:
 
 4. **Sync** per the entry's `mode` (see Sync models).
 
-5. **Record the result** (synced / pulled / skipped / failed) for the summary.
+5. **Record the result** for the summary, one of:
+   - `synced` — fresh clone made, or symlink newly created/replaced.
+   - `pulled` — existing clone updated via `git pull` (whether or not it had new
+     commits — no output parsing).
+   - `unchanged` — nothing to do: a symlink already pointing at the correct
+     target (true no-op).
+   - `skipped` — user declined a prompt (create / overwrite / known-path).
+   - `failed` — an operation errored (surfaced, run continued).
 
 ## Idempotency (re-runs)
 
@@ -255,8 +265,9 @@ Running the script again must be safe:
   with the operation, the target, and the exit code or error message, then
   continue to the next entry.
   Do not attempt automatic recovery — the user attends to failures manually.
-- At the end, print a **summary**: per-entry outcome, and a clear list of any
-  entries that failed or were skipped so nothing is silently missed.
+- At the end, print a **summary**: the per-entry outcome (`synced` / `pulled` /
+  `unchanged` / `skipped` / `failed`), and a clear list of any entries that
+  failed or were skipped so nothing is silently missed.
 
 ## Out of scope
 
