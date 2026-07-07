@@ -179,7 +179,7 @@ end
 ----------------------------------------------------------------------
 
 local function git_clone(entry, repo, dir, ok_detail)
-  if run("git clone " .. escape_single_quote(repo) .. " " .. shq(dir)) then
+  if run("git clone " .. escape_single_quote(repo) .. " " .. escape_single_quote(dir)) then
     record(entry.program, "synced", ok_detail)
     return true
   end
@@ -188,7 +188,7 @@ local function git_clone(entry, repo, dir, ok_detail)
 end
 
 local function make_symlink(entry, target, dest, ok_detail)
-  if run("ln -s " .. escape_single_quote(target) .. " " .. shq(dest)) then
+  if run("ln -s " .. escape_single_quote(target) .. " " .. escape_single_quote(dest)) then
     record(entry.program, "synced", ok_detail)
     return true
   end
@@ -246,7 +246,7 @@ local function sync_symlink(entry, dest)
 
   -- 1. Bring the staging clone up to date.
   if not path_exists(staging) then
-    if not run("git clone " .. escape_single_quote(repo) .. " " .. shq(staging)) then
+    if not run("git clone " .. escape_single_quote(repo) .. " " .. escape_single_quote(staging)) then
       fail(entry.program, "git clone", staging, "clone failed")
       return
     end
