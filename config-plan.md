@@ -19,11 +19,11 @@ checking for cases the user can read and fix themselves.
 ## Invocation
 
 ```
-luajit dotsync.lua [config.lua]
+luajit config-sync.lua [config.lua]
 ```
 
 - One optional positional argument: the config file path. Defaults to
-  `~/.config/dotsync/config.lua` when omitted.
+  `~/.config/config-sync/config.lua` when omitted.
 - If the config path is missing or fails to load/parse, print the error and exit
   non-zero before touching anything — a whole-run abort, not a per-entry skip.
 
@@ -184,7 +184,7 @@ working copy.
 
 ### `mode = "symlink"`
 Clone the repo into a central staging root, then symlink from it into place.
-- Staging root: `~/.local/share/dotsync/<program>` (create if absent).
+- Staging root: `~/.local/share/config-sync/<program>` (create if absent).
 - Not yet cloned → `git clone <repo> <staging>`.
 - Already cloned → `git -C <staging> pull`.
 - Then create the symlink according to `source`:
