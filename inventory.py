@@ -173,6 +173,9 @@ def probe_file(path, name, skip_read=False):
         return "json"
     if skip_read:
         return "unknown"
+    # Only open regular files — open() on a FIFO blocks until a writer shows up.
+    if not os.path.isfile(path):
+        return "generated"
     try:
         with open(path, "rb") as f:
             chunk = f.read(8192)
@@ -576,9 +579,10 @@ def render_listing(inv, args):
     orphans = sum(1 for e in entries if e["installed"] is False)
     secrets = sum(1 for e in entries if "secret" in e["flags"])
     repos = len({e["git"]["root"] for e in entries if e["git"]})
-    lines.append(f"Summary: {len(shown)} shown / {len(entries)} recorded · "
-                 + " · ".join(f"{c} {n}" for c, n in cats.items())
-                 + f" · orphans {orphans} · secrets {secrets} · git repos {repos}")
+    parts = [f"Summary: {len(shown)} shown / {len(entries)} recorded",
+             *(f"{c} {n}" for c, n in cats.items()),
+             f"orphans {orphans}", f"secrets {secrets}", f"git repos {repos}"]
+    lines.append(" · ".join(parts))
     hidden = len(entries) - len(shown)
     if hidden:
         lines.append(f"{hidden} hidden from listing (show with --generated / --secrets; "
@@ -601,6 +605,9 @@ def section_findings(recs):
     f = []
     prog = recs[0]["program"]
     present = [r for r in recs if "dangling" not in r["flags"]]
+    # Location checks apply to config proper, not a program's data/state dirs
+    # that happen to attribute to it.
+    conf = [r for r in present if r["category"] in ("config", "shell", "home", "unknown")]
 
     if prog:
         if any(r["installed"] for r in recs):
@@ -609,14 +616,14 @@ def section_findings(recs):
             f.append(("WARN", "config present but program not found (pacman or PATH)",
                       f"likely stale; verify before removing {display_path(recs[0])}"))
 
-    for r in present:
+    for r in conf:
         via = ""
         if r["via_symlink"]:
             links = ", ".join(shorten(l, r) for l in r["via_symlink"])
             via = f"  (via {links} → symlink)"
         f.append(("OK", f"config at {display_path(r)}{via}", None))
-    if len(present) > 1:
-        f.append(("WARN", f"config present at {len(present)} known paths at once", None))
+    if prog and len(conf) > 1:
+        f.append(("WARN", f"config present at {len(conf)} known paths at once", None))
     for r in recs:
         if "dangling" in r["flags"]:
             f.append(("ERROR", f"dangling symlink: {display_path(r)} (target missing)",
@@ -650,7 +657,8 @@ def section_findings(recs):
         if not git.get("upstream") or not git.get("remotes"):
             f.append(("INFO", "git: no remote/upstream configured", None))
 
-    if present and not any(r["is_git_repo"] for r in present):
+    candidates = [r for r in conf if r["editable"]]
+    if candidates and not any(r["is_git_repo"] for r in candidates):
         f.append(("INFO", "not under version control — candidate for a dotfiles repo",
                   None))
     if any("secret" in r["flags"] for r in recs):
