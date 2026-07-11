@@ -4,9 +4,8 @@
 
 A **read-only** Python script that discovers and catalogs the config/dotfiles on
 an Arch / CachyOS install: what exists, where, which installed program it belongs
-to, and whether it is already under version control. It is the discovery
-counterpart to `config-sync` — you inventory the box first, then decide what is
-worth putting in a `config-sync` config.
+to, and whether it is already under version control. You inventory the box
+first, then decide what is worth putting under version control.
 
 The script **never writes, moves, or deletes anything.** Its only side effects
 are reading the filesystem and shelling out to `pacman` for ownership queries.
@@ -21,7 +20,7 @@ default**, not merely deprioritized.
 **Filtering happens at render time, not collection time.** The structured
 (`--json`) inventory always contains *every* discovered entry with its flags;
 `--generated`, `--secrets`, `--only-orphans`, and `--min-relevance` only shape
-the human-readable listing and the `--config-sync` skeleton. This keeps
+the human-readable listing. This keeps
 inventories complete and comparable across runs regardless of which flags were
 active, and it is what lets the `health` subcommand work as a pure function of
 the stored records (its secret and dangling checks depend on those entries being
@@ -31,8 +30,8 @@ recorded).
 follows it to the real file and inventories *that* — the user-editable original —
 rather than the link. See "Symlink resolution."
 
-The goal is the same minimalism as `config-sync`: do only the work needed to
-classify each entry correctly, surface what it finds, and let the user decide.
+The goal is minimalism: do only the work needed to classify each entry
+correctly, surface what it finds, and let the user decide.
 
 ## Invocation
 
@@ -43,7 +42,7 @@ flags do not parse in health mode at all.
 
 ```
 # scan — build an inventory
-python3 inventory.py scan [--json | --config-sync] [--generated] [--all]
+python3 inventory.py scan [--json] [--generated] [--all]
                           [--secrets] [--only-orphans] [--min-relevance N]
                           [--root PATH ...]
 
@@ -66,12 +65,11 @@ python3 inventory.py health <inventory.json>
 - **`Target runtime: Python 3`** favor stdlib where it is a reasonable option.
 - **`pacman`** on `PATH` for package-ownership queries. A startup preflight
   checks for it and, if absent, prints `sudo pacman -S pacman`-style guidance and
-  aborts — same shape as `config-sync`'s `git` preflight. (In practice pacman is
+  aborts. (In practice pacman is
   always present on Arch; the check keeps the failure legible if run elsewhere.)
 - **Native filesystem inspection** via `os` / `pathlib` (`os.scandir`,
   `os.path.islink`, `os.readlink`, `os.stat`, `os.walk`). Only `pacman` and `git`
-  shell out (via `subprocess`), mirroring the "git-only shell-out" split in
-  `config-sync.py`.
+  shell out (via `subprocess`).
 - **Arch-only assumption.** Ownership and package names are pacman-specific; no
   other package manager is probed. (`shutil.which` is used as a secondary
   installed-check for programs that arrived outside pacman — see Package
@@ -137,8 +135,7 @@ scalar record fields — `secret`, `noise`, `dangling`. Derived states
 - `secret` — sensitive credential stores: `.ssh`, `.gnupg`, `.password-store`,
   `.netrc`, `.aws`, `.config/gh`, `.docker/config.json`, `.git-credentials`, …
   Recorded in the inventory (path and flags only — **content sniffing is skipped
-  for secret entries**), hidden from the human listing unless `--secrets`, and
-  **never** emitted into a `config-sync` skeleton.
+  for secret entries**) and hidden from the human listing unless `--secrets`.
 - `dangling` — reached via a symlink whose target does not exist (no editable
   source). **Shown in the default listing** — a broken config link is exactly the
   kind of cleanup signal the tool exists to surface — and reported as `ERROR` by
@@ -208,8 +205,8 @@ layered strategy, cheapest first:
    alias map (`nvim`→`neovim`, `kitty`→`kitty`, `Code`→`code`/`vscode`,
    `zsh`/`.zshrc`→`zsh`, …). This resolves the common case without per-path forks.
 2. **Curated known-dotfiles registry.** A built-in table mapping program →
-   home-relative rc files and config dir names — a superset of `config-sync`'s
-   `KNOWN_PATHS`, covering shells, editors, terminals, WMs/DEs, and the common
+   home-relative rc files and config dir names, covering shells, editors,
+   terminals, WMs/DEs, and the common
    CLI tools. Provides the canonical program name and the expected paths, so a
    `.tmux.conf` in the home dir is attributed to `tmux` even though it isn't under
    `.config`.
@@ -263,9 +260,8 @@ a `.git` ancestor is found does the script shell out —
 `git -C <dir> rev-parse --show-toplevel` to confirm and canonicalize the
 toplevel (this also correctly handles `.git` *files* in worktrees/submodules).
 
-For every such entry the script captures a `git` sub-record so a discovered
-dotfiles repo maps cleanly onto `config-sync` and the user can see how far the
-working copy has drifted from its remote.
+For every such entry the script captures a `git` sub-record so the user can see
+how far a discovered dotfiles repo's working copy has drifted from its remote.
 
 All queries are **read-only plumbing** and run **once per repo root**, memoized by
 toplevel — several inventoried entries in one dotfiles monorepo share a single set
@@ -313,14 +309,8 @@ only shell-outs, both read-only.
   itemized relevance contributions. **Always complete:** the display filters do
   not remove records from `--json` (only unscanned roots are absent — `--all`
   still controls whether `state`/`cache` are walked at all). Written to stdout so
-  it pipes into `jq` / the `--config-sync` generator, and diffing two saved runs
-  with `jq` covers the cross-run comparison story.
-- **`--config-sync`:** emit a ready-to-edit `config-sync` config skeleton
-  (defaults to the Python `CONFIG = [...]` form; the format could be selected
-  later) prefilled from the strongest candidates — git-repo entries (with
-  discovered `repo`/`dest`/`mode`) and high-relevance package-matched configs.
-  `secret`-flagged entries are **never** included. Emitted commented-out so the
-  user opts each one in deliberately rather than syncing by accident.
+  it pipes into `jq`, and diffing two saved runs with `jq` covers the cross-run
+  comparison story.
 
 A SQLite export was considered and deferred — see Out of scope.
 
@@ -576,19 +566,18 @@ Needs attention:
 ## Flags summary
 
 Display filters (`--generated`, `--secrets`, `--only-orphans`,
-`--min-relevance`) shape the human-readable listing and the `--config-sync`
-skeleton only; the `--json` inventory is always complete.
+`--min-relevance`) shape the human-readable listing only; the `--json`
+inventory is always complete.
 
 | Flag | Effect |
 |------|--------|
 | `--generated`       | Show machine-generated (`editable: false`) entries in the listing. |
 | `--all`             | Also scan the `state` and `cache` roots (implies `--generated`). |
-| `--secrets`         | Show `secret`-flagged entries in the listing (they are always recorded in `--json`, never in `--config-sync`). |
+| `--secrets`         | Show `secret`-flagged entries in the listing (they are always recorded in `--json`). |
 | `--only-orphans`    | Restrict the listing to orphan entries (config whose program was not found). |
 | `--min-relevance N` | Hide entries scoring below `N` from the listing. |
 | `--root PATH`       | Add an extra scan root (repeatable). |
 | `--json`            | Canonical, complete structured output (`{meta, entries}`) to stdout. |
-| `--config-sync`     | Emit a commented `config-sync` skeleton from top candidates. |
 
 `health` is a subcommand, not a flag: `inventory.py health <inventory.json>`.
 
@@ -615,9 +604,9 @@ skeleton only; the `--json` inventory is always complete.
   `mtime`/`scanned_at` normalized) against a checked-in expected document; the
   worked example above is the seed for this golden file.
 - **Seams for shell-outs.** `pacman` and `git` invocations go through
-  module-level helper functions (the `capture`/`run` shape used in
-  `config-sync.py`) so tests can monkeypatch them and unit-test attribution and
-  git-record assembly without the real tools.
+  module-level helper functions (a `capture`/`run` pair) so tests can
+  monkeypatch them and unit-test attribution and git-record assembly without
+  the real tools.
 - **Health as a pure function.** Health checks take record dicts in and findings
   out, so they are unit-tested directly with hand-built records; the example
   `health` output above doubles as a golden rendering test.
@@ -625,7 +614,7 @@ skeleton only; the `--json` inventory is always complete.
 ## Out of scope
 
 - **No modification of anything** — no dedup, cleanup, moving, or deleting. Purely
-  read-only discovery. (Acting on the inventory is `config-sync`'s job.)
+  read-only discovery.
 - **SQLite export (`--sqlite`) — deferred.** It would only be a relational
   projection of the JSON (the records stay the source of truth), and `jq` over
   two saved `--json` runs already covers cross-run diffing. It returns only if a
