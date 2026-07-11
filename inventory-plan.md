@@ -28,15 +28,29 @@ classify each entry correctly, surface what it finds, and let the user decide.
 
 ## Invocation
 
+Two modes: **scan** (inspect the system and emit an inventory) and **health**
+(read an inventory emitted earlier and report on it). Health never scans.
+
 ```
+# scan — build an inventory
 python3 inventory.py [--json | --config-sync | --sqlite PATH] [--generated]
                      [--all] [--secrets] [--orphans] [--min-relevance N]
                      [--root PATH ...]
+
+# health — read an inventory built above and print a checkhealth-style report
+python3 inventory.py --health <inventory.json | inventory.db>
 ```
 
-- No positional arguments required — it scans the current user's home by default.
-- Output goes to stdout; nothing is written to disk unless the user redirects it.
-- Exit non-zero only on a hard failure (e.g. `pacman` missing, `$HOME` unset).
+- **Scan mode** takes no positional arguments — it scans the current user's home
+  by default. Output goes to stdout unless a file is named (`--sqlite PATH`);
+  nothing else is written to disk unless the user redirects it.
+- **Health mode** takes one positional argument: the path to an inventory file
+  created by a prior `--json` run (redirected to a file) or a `--sqlite` run. The
+  format is inferred from the file. Health mode does **no** scanning and honors
+  none of the scan/filter flags — it reports exactly what the stored inventory
+  contains. See "Health check."
+- Exit non-zero only on a hard failure (scan: `pacman` missing, `$HOME` unset;
+  health: the inventory file is missing or unreadable).
 
 ## Runtime & dependencies
 
@@ -236,8 +250,20 @@ only shell-outs, both read-only.
   `(dotfiles: main ✎ ↑2↓1)` meaning branch `main`, uncommitted changes, 2 ahead /
   1 behind upstream. A trailing summary counts entries per category and highlights
   `orphan` / `secret` / `git-repo` sets.
-- **`--json`:** the full per-entry record list (see below) for machine
-  consumption, including the itemized relevance contributions.
+- **`--json`:** the canonical structured output — a single object
+  `{ "meta": {...}, "entries": [...] }`, where `meta` carries run-level context
+  (scan time, resolved roots, tool version, active flags) and `entries` is the
+  full per-entry record list (see the record shape and worked example below),
+  including the itemized relevance contributions. Written to stdout so it pipes
+  into `jq` / the `--config-sync` generator. This is the primary structured
+  format; the others are convenience exports of the same records.
+- **`--sqlite PATH`:** write the same records to a SQLite database at `PATH`
+  instead of stdout, for querying across runs (e.g. diffing inventories, finding
+  orphans by machine). It is a relational projection of the JSON — a `run` row for
+  the `meta`, an `entries` table for the scalar columns, and child tables for the
+  repeated/nested parts (`git` repos memoized by root, `remotes`, `flags`,
+  `relevance_terms`). Schema is deferred; the JSON records are the source of truth
+  and this mirrors them. Uses the stdlib `sqlite3` module — no new dependency.
 - **`--config-sync`:** emit a ready-to-edit `config-sync` config skeleton
   (defaults to the Python `CONFIG = [...]` form; the format could be selected
   later) prefilled from the strongest candidates — `git-repo` entries (with
@@ -280,6 +306,210 @@ dirty           {modified, untracked}  — {0, 0} means a clean working tree
 last_commit     {sha, date}            — HEAD short SHA + ISO commit date
 ```
 
+## Example `--json` output
+
+A run finding four entries — an nvim config symlinked out to a dotfiles repo, a
+plain ghostty config, a tmux config kept as a home-dir rc file, and an orphaned
+polybar config whose program isn't installed:
+
+```json
+{
+  "meta": {
+    "tool": "inventory.py",
+    "version": "0.1.0",
+    "host": "cachyos",
+    "scanned_at": "2026-07-11T14:32:07-05:00",
+    "roots": ["/home/jd/.config", "/home/jd", "/home/jd/.local/share"],
+    "flags": {
+      "generated": false,
+      "all": false,
+      "secrets": false,
+      "orphans": false,
+      "min_relevance": 0
+    }
+  },
+  "entries": [
+    {
+      "path": "/home/jd/dotfiles/nvim",
+      "rel": "dotfiles/nvim",
+      "category": "config",
+      "kind": "dir",
+      "via_symlink": ["/home/jd/.config/nvim"],
+      "size": 48211,
+      "mtime": "2026-07-09T21:14:03-05:00",
+      "editable": true,
+      "is_git_repo": true,
+      "git": {
+        "root": "/home/jd/dotfiles",
+        "name": "dotfiles",
+        "remotes": [
+          {"name": "origin", "url": "git@github.com:joshdennin/dotfiles.git"}
+        ],
+        "branch": "main",
+        "upstream": "origin/main",
+        "ahead": 2,
+        "behind": 0,
+        "default_branch": "main",
+        "vs_default": {"ahead": 0, "behind": 0, "is_default": true},
+        "dirty": {"modified": 1, "untracked": 0},
+        "last_commit": {"sha": "a1b2c3d", "date": "2026-07-09T21:14:03-05:00"}
+      },
+      "program": "neovim",
+      "installed": true,
+      "flags": ["git-repo"],
+      "relevance": 95,
+      "relevance_terms": [
+        {"label": "installed package (neovim)", "delta": 30},
+        {"label": "git repo", "delta": 25},
+        {"label": "known-dotfiles registry", "delta": 25},
+        {"label": "text-only tree", "delta": 15}
+      ]
+    },
+    {
+      "path": "/home/jd/.config/ghostty",
+      "rel": ".config/ghostty",
+      "category": "config",
+      "kind": "dir",
+      "via_symlink": null,
+      "size": 2480,
+      "mtime": "2026-07-02T09:15:41-05:00",
+      "editable": true,
+      "is_git_repo": false,
+      "git": null,
+      "program": "ghostty",
+      "installed": true,
+      "flags": [],
+      "relevance": 70,
+      "relevance_terms": [
+        {"label": "installed package (ghostty)", "delta": 30},
+        {"label": "known-dotfiles registry", "delta": 25},
+        {"label": "text-only tree", "delta": 15}
+      ]
+    },
+    {
+      "path": "/home/jd/.tmux.conf",
+      "rel": ".tmux.conf",
+      "category": "config",
+      "kind": "file",
+      "via_symlink": null,
+      "size": 1840,
+      "mtime": "2026-05-21T18:03:12-05:00",
+      "editable": true,
+      "is_git_repo": false,
+      "git": null,
+      "program": "tmux",
+      "installed": true,
+      "flags": [],
+      "relevance": 80,
+      "relevance_terms": [
+        {"label": "installed package (tmux)", "delta": 30},
+        {"label": "known-dotfiles registry", "delta": 25},
+        {"label": "text-only tree", "delta": 15},
+        {"label": "known rc file (.tmux.conf)", "delta": 10}
+      ]
+    },
+    {
+      "path": "/home/jd/.config/polybar",
+      "rel": ".config/polybar",
+      "category": "config",
+      "kind": "dir",
+      "via_symlink": null,
+      "size": 6044,
+      "mtime": "2025-11-18T13:40:22-05:00",
+      "editable": true,
+      "is_git_repo": false,
+      "git": null,
+      "program": "polybar",
+      "installed": false,
+      "flags": ["orphan"],
+      "relevance": 20,
+      "relevance_terms": [
+        {"label": "known-dotfiles registry", "delta": 25},
+        {"label": "text-only tree", "delta": 15},
+        {"label": "orphan: polybar not installed", "delta": -20}
+      ]
+    }
+  ]
+}
+```
+
+## Health check (`--health`)
+
+`--health <inventory>` is a **reader, not a scanner.** It loads an inventory
+previously written by `--json` (redirected to a file) or `--sqlite`, and renders a
+human-friendly, per-program diagnostic modeled on Neovim's `:checkhealth`. It
+collects no data of its own — every check is a pure function of the stored record
+fields — so it is fast, offline, and reproducible. It reflects the **snapshot**
+taken when the inventory was built; re-scan to refresh a stale git status.
+
+Separating collection from reporting means the slower, privileged scan runs once,
+while the report can be re-run, diffed, or shared without touching the system
+again. This is why health takes an existing inventory as input rather than
+scanning on the fly.
+
+Each program becomes a section; each finding is a status line with a severity
+marker and, where useful, a suggested command. Findings derive from stored fields:
+
+| Check | Condition (from the record) | Status |
+|-------|------------------------------|--------|
+| Program present | owning program `installed` | `OK` |
+| | config present but program not installed (`orphan`) | `WARN` |
+| Location | single resolved config found | `OK` |
+| | config present at several known paths at once | `WARN` |
+| | reached via a `dangling` symlink | `ERROR` |
+| Git — clean | working tree clean, level with upstream | `OK` |
+| Git — dirty | `dirty` has uncommitted changes | `WARN` |
+| Git — ahead | `ahead` > 0 (unpushed commits) | `WARN` |
+| Git — behind | `behind` > 0 (needs pull) | `WARN` |
+| Git — diverged | both `ahead` and `behind` > 0 | `WARN` |
+| Git — branch | on a non-default branch (`vs_default.is_default` false) | `INFO` |
+| Git — detached | `branch` is detached | `WARN` |
+| Git — remote | no `upstream` / empty `remotes` | `INFO` |
+| Not tracked | `is_git_repo` false | `INFO` (candidate for version control) |
+| Safety | `secret`-flagged config present | `WARN` (do not sync to a public repo) |
+
+Severities roll up into a summary: counts of `OK` / `WARN` / `ERROR` / `INFO`,
+then the list of items needing attention (everything `WARN` or `ERROR`) so nothing
+is missed.
+
+### Example `--health` output
+
+Reading the four-entry inventory from the JSON example above:
+
+```text
+config inventory — health check       2026-07-11 14:32   host: cachyos
+source: inventory.json  (scanned 2026-07-11 14:32:07)
+
+nvim
+  OK     program installed (neovim)
+  OK     config at ~/dotfiles/nvim  (via ~/.config/nvim → symlink)
+  OK     git: dotfiles @ main
+  WARN   git: 1 uncommitted change in the working tree
+         → git -C ~/dotfiles status
+  WARN   git: 2 commits ahead of origin/main (unpushed)
+         → git -C ~/dotfiles push
+
+ghostty
+  OK     program installed (ghostty)
+  OK     config at ~/.config/ghostty
+  INFO   not under version control — candidate for a dotfiles repo
+
+tmux
+  OK     program installed (tmux)
+  OK     config at ~/.tmux.conf
+  INFO   not under version control — candidate for a dotfiles repo
+
+polybar
+  WARN   config present but program not installed (orphan)
+         → sudo pacman -S polybar   (or remove ~/.config/polybar)
+  INFO   not under version control
+
+Summary: 4 programs · 7 OK · 3 WARN · 0 ERROR · 3 INFO
+Needs attention:
+  • nvim     — 1 uncommitted change, 2 commits unpushed to origin/main
+  • polybar  — orphan config (program not installed)
+```
+
 ## Flags summary
 
 | Flag | Effect |
@@ -290,8 +520,10 @@ last_commit     {sha, date}            — HEAD short SHA + ISO commit date
 | `--orphans`         | Show **only** `orphan` entries (config with program not installed). |
 | `--min-relevance N` | Hide kept entries scoring below `N`. |
 | `--root PATH`       | Add an extra scan root (repeatable). |
-| `--json`            | Machine-readable output. |
+| `--json`            | Canonical structured output (`{meta, entries}`) to stdout. |
+| `--sqlite PATH`     | Write the same records to a SQLite database at `PATH` (stdlib `sqlite3`). |
 | `--config-sync`     | Emit a commented `config-sync` skeleton from top candidates. |
+| `--health PATH`     | **Read** a prior `--json`/`--sqlite` inventory and print a `:checkhealth`-style report (no scanning). |
 
 ## Performance
 
