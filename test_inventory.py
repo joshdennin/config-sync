@@ -15,7 +15,7 @@ import inventory
 
 def scan_args(**kw):
     defaults = dict(json=False, generated=False, all=False, secrets=False,
-                    only_orphans=False, min_relevance=0, root=[])
+                    only_orphans=False, min_relevance=0, root=[], config=None)
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -86,6 +86,8 @@ class ScanTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = os.path.realpath(self.tmp.name)
         make_fixture(self.home)
+        # Classification tables live in the shipped TOML; load it before scanning.
+        inventory.load_config(inventory.default_config_path())
         fake = FakeGit(os.path.join(self.home, "dotfiles"))
         patches = [
             mock.patch.object(inventory, "capture", fake.capture),

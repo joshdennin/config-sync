@@ -1,0 +1,106 @@
+# inventory.py configuration — the source of truth for its classification tables.
+#
+# inventory.py ships with this file and loads it on every `scan`; there are no
+# built-in defaults in the code. Edit it to teach the tool new programs, mark
+# additional secret stores, or extend the machine-generated denylists. Point at
+# a different copy with `scan --config PATH`.
+#
+# The tool itself never writes to this file (or anything else) — it is yours to
+# maintain by hand.
+
+# --------------------------------------------------------------------------
+# Known-dotfiles registry: program -> home-relative rc files and config-dir
+# basenames. "pkgs" lists pacman package names when they differ from the
+# program name; "bin" the executable name when it differs (used for the
+# PATH installed-check and as the health section title).
+
+[programs]
+bash       = { paths = [".bashrc", ".bash_profile", ".bash_logout", ".profile"] }
+zsh        = { paths = [".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", "zsh"] }
+fish       = { paths = ["fish"] }
+readline   = { paths = [".inputrc"], bin = "bash" }
+git        = { paths = [".gitconfig", ".gitignore_global", "git"] }
+tmux       = { paths = [".tmux.conf", "tmux"] }
+vim        = { paths = [".vimrc", ".vim"], pkgs = ["gvim"] }
+neovim     = { paths = ["nvim"], bin = "nvim" }
+emacs      = { paths = [".emacs", ".emacs.d", "emacs"] }
+kitty      = { paths = ["kitty"] }
+alacritty  = { paths = ["alacritty"] }
+ghostty    = { paths = ["ghostty"] }
+wezterm    = { paths = ["wezterm", ".wezterm.lua"] }
+foot       = { paths = ["foot"] }
+starship   = { paths = ["starship.toml"] }
+hyprland   = { paths = ["hypr"], bin = "Hyprland" }
+sway       = { paths = ["sway"] }
+i3         = { paths = ["i3"], pkgs = ["i3-wm"] }
+waybar     = { paths = ["waybar"] }
+polybar    = { paths = ["polybar"] }
+rofi       = { paths = ["rofi"] }
+wofi       = { paths = ["wofi"] }
+dunst      = { paths = ["dunst"] }
+mako       = { paths = ["mako"] }
+picom      = { paths = ["picom"] }
+xorg       = { paths = [".xinitrc", ".xprofile", ".Xresources", ".Xdefaults"], pkgs = ["xorg-server"], bin = "Xorg" }
+gtk        = { paths = ["gtk-3.0", "gtk-4.0", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], bin = "gtk-launch" }
+qt         = { paths = ["qt5ct", "qt6ct"], pkgs = ["qt5ct", "qt6ct"], bin = "qt6ct" }
+fontconfig = { paths = ["fontconfig"], bin = "fc-list" }
+mpv        = { paths = ["mpv"] }
+htop       = { paths = ["htop"] }
+btop       = { paths = ["btop"] }
+fastfetch  = { paths = ["fastfetch"] }
+ranger     = { paths = ["ranger"] }
+yazi       = { paths = ["yazi"] }
+lf         = { paths = ["lf"] }
+lazygit    = { paths = ["lazygit"] }
+zathura    = { paths = ["zathura"] }
+openssh    = { paths = [".ssh"], bin = "ssh" }
+gnupg      = { paths = [".gnupg"], bin = "gpg" }
+pass       = { paths = [".password-store"] }
+aws-cli    = { paths = [".aws"], pkgs = ["aws-cli-v2"], bin = "aws" }
+github-cli = { paths = ["gh"], pkgs = ["github-cli"], bin = "gh" }
+docker     = { paths = [".docker"] }
+kubectl    = { paths = [".kube"] }
+npm        = { paths = [".npmrc"] }
+cargo      = { paths = [".cargo"], pkgs = ["rust", "rustup"] }
+wget       = { paths = [".wgetrc"] }
+curl       = { paths = [".curlrc"] }
+
+# --------------------------------------------------------------------------
+# Shell startup files → category "shell".
+
+[shell]
+files = [".bashrc", ".bash_profile", ".bash_logout", ".profile",
+         ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".inputrc"]
+
+# --------------------------------------------------------------------------
+# Sensitive credential stores: never content-sniffed, and hidden from the
+# listing unless --secrets. "home" matches home-dir basenames, "config"
+# matches basenames under ~/.config.
+
+[secrets]
+home = [".ssh", ".gnupg", ".password-store", ".netrc", ".aws",
+        ".git-credentials", ".docker", ".kube", ".pki"]
+config = ["gh"]
+
+# --------------------------------------------------------------------------
+# State/cache dirs that live under ~/.config despite not being config →
+# flagged "noise" and deprioritized.
+
+[noise]
+dirs = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
+        "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
+        "Electron", "teams", "Signal", "session", "pulse", "dconf",
+        "ibus", "Trolltech.conf"]
+
+# --------------------------------------------------------------------------
+# Machine-generated markers → hidden from the default listing. "exts" match a
+# file's extension (leading dot optional, case-insensitive); "dir_names" match
+# a directory basename anywhere in a probed tree.
+
+[generated]
+exts = [".db", ".sqlite", ".sqlite3", ".log", ".lock", ".pid", ".bak",
+        ".old", ".tmp", ".sock", ".socket", ".ldb", ".dat", ".pyc"]
+dir_names = ["logs", "log", "Cache", "cache", "CachedData", "Code Cache",
+             "GPUCache", "DawnCache", "ShaderCache", "GrShaderCache",
+             "Crashpad", "blob_storage", "Service Worker",
+             "Session Storage", "Local Storage", "IndexedDB", "databases"]

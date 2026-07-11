@@ -44,7 +44,7 @@ flags do not parse in health mode at all.
 # scan — build an inventory
 python3 inventory.py scan [--json] [--generated] [--all]
                           [--secrets] [--only-orphans] [--min-relevance N]
-                          [--root PATH ...]
+                          [--root PATH ...] [--config PATH]
 
 # health — read an inventory built above and print a checkhealth-style report
 python3 inventory.py health <inventory.json>
@@ -52,17 +52,25 @@ python3 inventory.py health <inventory.json>
 
 - **`scan`** takes no positional arguments — it scans the current user's home by
   default. Output goes to stdout; nothing is written to disk unless the user
-  redirects it.
+  redirects it. `--config PATH` selects the TOML config that supplies the
+  classification tables; it defaults to the `inventory-config.toml` shipped
+  next to the script (see Configuration).
 - **`health`** takes exactly one positional argument: the path to an inventory
   file created by a prior `scan --json` run (redirected to a file). Health does
   **no** scanning and takes none of the scan flags — it reports exactly what the
   stored inventory contains. See "Health check."
-- Exit non-zero only on a hard failure (scan: `pacman` missing, `$HOME` unset;
-  health: the inventory file is missing, unreadable, or not a valid inventory).
+- Exit non-zero only on a hard failure (scan: `pacman` missing, `$HOME` unset,
+  the TOML config missing or malformed; health: the inventory file is missing,
+  unreadable, or not a valid inventory).
 
 ## Runtime & dependencies
 
 - **`Target runtime: Python 3`** favor stdlib where it is a reasonable option.
+  The config is read with the stdlib `tomllib` (Python 3.11+), so no third-party
+  parser is pulled in.
+- **A TOML config file** supplies the classification tables (`inventory-config.toml`,
+  shipped next to the script). It is **required** — a missing or malformed config
+  is a hard error, since the code carries no fallback tables. See Configuration.
 - **`pacman`** on `PATH` for package-ownership queries. A startup preflight
   checks for it and, if absent, prints `sudo pacman -S pacman`-style guidance and
   aborts. (In practice pacman is
@@ -74,6 +82,42 @@ python3 inventory.py health <inventory.json>
   other package manager is probed. (`shutil.which` is used as a secondary
   installed-check for programs that arrived outside pacman — see Package
   cross-reference.)
+
+## Configuration
+
+The classification knowledge — *which* programs exist, which files are shell
+startup files, which stores are secret, which names are machine-generated noise
+— is **data, not code.** It lives in a TOML config rather than hardcoded tables,
+so the tool can be taught a new program or a new secret store by editing a file,
+with no code change. The script ships `inventory-config.toml` next to itself and
+loads it on every `scan`; `--config PATH` points at a different copy.
+
+**The config is the source of truth — there are no built-in defaults.** The
+shipped file *is* the default set (pre-populated with the full registry), and
+`scan` refuses to run without a readable, valid config. This keeps a single
+authority for the tables instead of splitting them between code and an optional
+overlay. Consistent with the read-only stance, **the tool never writes this file
+either** — it is shipped in the repo and maintained by hand.
+
+Sections (each validated on load; a structural error aborts with a message):
+
+| Section | Shape | Feeds |
+|---------|-------|-------|
+| `[programs]` | `name = { paths = [...], pkgs = [...]?, bin = str? }` | known-dotfiles registry + reverse path map (Package cross-reference) |
+| `[shell]` | `files = [...]` | `shell`-category rc files (Classification) |
+| `[secrets]` | `home = [...]`, `config = [...]` | `secret` flag — home-dir and `~/.config` basenames |
+| `[noise]` | `dirs = [...]` | `noise` flag — state/cache dirs under `~/.config` |
+| `[generated]` | `exts = [...]`, `dir_names = [...]` | machine-generated denylist (Human-editable filter) |
+
+`[generated].exts` accept a leading dot or not and are matched case-insensitively.
+Everything is grouped under named tables (never bare top-level keys) so a key's
+scope can't shift with its position in the file — a TOML footgun where a bare
+key written after a `[table]` header silently binds to that table.
+
+What stays in **code**, deliberately, because it is behavior rather than curated
+data: the root/category wiring and home-exclusion set, the category display
+order, the text-vs-binary sniff byte set, and the relevance-scoring weights.
+These are coupled to how the scanner runs, not lookup tables a user curates.
 
 ## Scan scope
 
@@ -126,8 +170,10 @@ against the resolved symlink target (see Symlink resolution). When deduplication
 collapses several links onto one target, the surviving entry takes the category
 of the link whose root is highest in the Scan-scope priority order.
 
-**Flags** (any combination). Flags record only what is *not* derivable from the
-scalar record fields — `secret`, `noise`, `dangling`. Derived states
+**Flags** (any combination). The `secret` and `noise` denylists (and the
+machine-generated names behind the filter below) are drawn from the TOML config,
+not hardcoded — see Configuration. Flags record only what is *not* derivable
+from the scalar record fields — `secret`, `noise`, `dangling`. Derived states
 (`orphan` ⇐ `installed == false`, `generated` ⇐ `editable == false`,
 `git-repo` ⇐ `is_git_repo`) are rendered as badges by the display layer but are
 **not** stored redundantly, so there is a single source of truth per fact.
@@ -204,12 +250,12 @@ layered strategy, cheapest first:
    (`pacman -Qq`). Match the entry's basename against it directly and via a small
    alias map (`nvim`→`neovim`, `kitty`→`kitty`, `Code`→`code`/`vscode`,
    `zsh`/`.zshrc`→`zsh`, …). This resolves the common case without per-path forks.
-2. **Curated known-dotfiles registry.** A built-in table mapping program →
-   home-relative rc files and config dir names, covering shells, editors,
-   terminals, WMs/DEs, and the common
+2. **Curated known-dotfiles registry.** The `[programs]` table from the TOML
+   config (see Configuration) maps program → home-relative rc files and config
+   dir names, covering shells, editors, terminals, WMs/DEs, and the common
    CLI tools. Provides the canonical program name and the expected paths, so a
    `.tmux.conf` in the home dir is attributed to `tmux` even though it isn't under
-   `.config`.
+   `.config`. Extending it to a new program is a config edit, not a code change.
 3. **`shutil.which` secondary check.** `pacman -Qq` covers repo and AUR packages,
    but not flatpak, pip/pipx, cargo, npm, appimages, or curl-installed tools —
    all common even on Arch, and all of which leave config dirs behind. Before
@@ -577,6 +623,7 @@ inventory is always complete.
 | `--only-orphans`    | Restrict the listing to orphan entries (config whose program was not found). |
 | `--min-relevance N` | Hide entries scoring below `N` from the listing. |
 | `--root PATH`       | Add an extra scan root (repeatable). |
+| `--config PATH`     | TOML config supplying the classification tables (default: `inventory-config.toml` next to the script). |
 | `--json`            | Canonical, complete structured output (`{meta, entries}`) to stdout. |
 
 `health` is a subcommand, not a flag: `inventory.py health <inventory.json>`.
@@ -607,6 +654,11 @@ inventory is always complete.
   module-level helper functions (a `capture`/`run` pair) so tests can
   monkeypatch them and unit-test attribution and git-record assembly without
   the real tools.
+- **Config loading.** Because the classification tables now come from TOML, the
+  scan tests load the shipped `inventory-config.toml` before scanning; a
+  parity check also confirms the migrated tables match the values they replaced,
+  and the loader's error paths (missing file, malformed TOML, bad section shape)
+  are exercised directly.
 - **Health as a pure function.** Health checks take record dicts in and findings
   out, so they are unit-tested directly with hand-built records; the example
   `health` output above doubles as a golden rendering test.

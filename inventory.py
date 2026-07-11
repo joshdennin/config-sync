@@ -12,9 +12,19 @@ scan flags:
   --only-orphans       restrict the listing to orphan entries
   --min-relevance N    hide entries scoring below N from the listing (default 0)
   --root PATH          add an extra scan root, categorized "unknown" (repeatable)
+  --config PATH        TOML config with the classification tables
+                       (default: inventory-config.toml next to the script)
 
 health arguments:
   inventory            path to an inventory file written by `scan --json`
+
+The classification tables (the known-dotfiles registry, the shell/secret/noise
+lists, and the machine-generated denylists) live in a TOML config, not in the
+code. `scan` loads inventory-config.toml from next to this script by default,
+or the file given to --config; it is required, so a missing or malformed config
+is a hard error. The shipped file documents every section — [programs],
+[shell], [secrets], [noise], [generated] — and is edited by hand to teach the
+tool new programs or stores.
 
 Example — save a structured inventory, then run a health check on it:
   inventory.py scan --json > inventory.json
@@ -31,94 +41,26 @@ import platform
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections import Counter
 from datetime import datetime
 
 VERSION = "0.1.0"
 
 # --------------------------------------------------------------------------
-# Static tables
+# Classification tables — populated from the TOML config by load_config().
+# There are no built-in defaults; the shipped inventory-config.toml is the
+# source of truth. (Structural constants that are code behavior, not curated
+# data — HOME_EXCLUDE, CAT_ORDER, _TEXT_BYTES — stay below.)
 
-# Curated known-dotfiles registry: program -> home-relative rc files and
-# config dir basenames; "pkgs" lists pacman package names when they differ
-# from the program name, "bin" the executable name when it differs.
-PROGRAMS = {
-    "bash": {"paths": [".bashrc", ".bash_profile", ".bash_logout", ".profile"]},
-    "zsh": {"paths": [".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", "zsh"]},
-    "fish": {"paths": ["fish"]},
-    "readline": {"paths": [".inputrc"], "bin": "bash"},
-    "git": {"paths": [".gitconfig", ".gitignore_global", "git"]},
-    "tmux": {"paths": [".tmux.conf", "tmux"]},
-    "vim": {"paths": [".vimrc", ".vim"], "pkgs": ["gvim"]},
-    "neovim": {"paths": ["nvim"], "bin": "nvim"},
-    "emacs": {"paths": [".emacs", ".emacs.d", "emacs"]},
-    "kitty": {"paths": ["kitty"]},
-    "alacritty": {"paths": ["alacritty"]},
-    "ghostty": {"paths": ["ghostty"]},
-    "wezterm": {"paths": ["wezterm", ".wezterm.lua"]},
-    "foot": {"paths": ["foot"]},
-    "starship": {"paths": ["starship.toml"]},
-    "hyprland": {"paths": ["hypr"], "bin": "Hyprland"},
-    "sway": {"paths": ["sway"]},
-    "i3": {"paths": ["i3"], "pkgs": ["i3-wm"]},
-    "waybar": {"paths": ["waybar"]},
-    "polybar": {"paths": ["polybar"]},
-    "rofi": {"paths": ["rofi"]},
-    "wofi": {"paths": ["wofi"]},
-    "dunst": {"paths": ["dunst"]},
-    "mako": {"paths": ["mako"]},
-    "picom": {"paths": ["picom"]},
-    "xorg": {"paths": [".xinitrc", ".xprofile", ".Xresources", ".Xdefaults"],
-             "pkgs": ["xorg-server"], "bin": "Xorg"},
-    "gtk": {"paths": ["gtk-3.0", "gtk-4.0", ".gtkrc-2.0"],
-            "pkgs": ["gtk3", "gtk4"], "bin": "gtk-launch"},
-    "qt": {"paths": ["qt5ct", "qt6ct"], "pkgs": ["qt5ct", "qt6ct"], "bin": "qt6ct"},
-    "fontconfig": {"paths": ["fontconfig"], "bin": "fc-list"},
-    "mpv": {"paths": ["mpv"]},
-    "htop": {"paths": ["htop"]},
-    "btop": {"paths": ["btop"]},
-    "fastfetch": {"paths": ["fastfetch"]},
-    "ranger": {"paths": ["ranger"]},
-    "yazi": {"paths": ["yazi"]},
-    "lf": {"paths": ["lf"]},
-    "lazygit": {"paths": ["lazygit"]},
-    "zathura": {"paths": ["zathura"]},
-    "openssh": {"paths": [".ssh"], "bin": "ssh"},
-    "gnupg": {"paths": [".gnupg"], "bin": "gpg"},
-    "pass": {"paths": [".password-store"]},
-    "aws-cli": {"paths": [".aws"], "pkgs": ["aws-cli-v2"], "bin": "aws"},
-    "github-cli": {"paths": ["gh"], "pkgs": ["github-cli"], "bin": "gh"},
-    "docker": {"paths": [".docker"]},
-    "kubectl": {"paths": [".kube"]},
-    "npm": {"paths": [".npmrc"]},
-    "cargo": {"paths": [".cargo"], "pkgs": ["rust", "rustup"]},
-    "wget": {"paths": [".wgetrc"]},
-    "curl": {"paths": [".curlrc"]},
-}
-
-# Reverse map: rc-file / config-dir basename -> program.
-REGISTRY_BY_PATH = {p: prog for prog, info in PROGRAMS.items() for p in info["paths"]}
-
-SHELL_FILES = {".bashrc", ".bash_profile", ".bash_logout", ".profile",
-               ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".inputrc"}
-
-# Sensitive credential stores: never content-sniffed, hidden unless --secrets.
-SECRET_HOME = {".ssh", ".gnupg", ".password-store", ".netrc", ".aws",
-               ".git-credentials", ".docker", ".kube", ".pki"}
-SECRET_CONFIG = {"gh"}
-
-# Known state/cache dirs that live under .config despite not being config.
-NOISE_DIRS = {"Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
-              "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
-              "Electron", "teams", "Signal", "session", "pulse", "dconf",
-              "ibus", "Trolltech.conf"}
-
-GENERATED_EXTS = {".db", ".sqlite", ".sqlite3", ".log", ".lock", ".pid", ".bak",
-                  ".old", ".tmp", ".sock", ".socket", ".ldb", ".dat", ".pyc"}
-GENERATED_DIR_NAMES = {"logs", "log", "Cache", "cache", "CachedData", "Code Cache",
-                       "GPUCache", "DawnCache", "ShaderCache", "GrShaderCache",
-                       "Crashpad", "blob_storage", "Service Worker",
-                       "Session Storage", "Local Storage", "IndexedDB", "databases"}
+PROGRAMS = {}          # program -> {"paths": [...], "pkgs"?: [...], "bin"?: str}
+REGISTRY_BY_PATH = {}  # rc-file / config-dir basename -> program (derived)
+SHELL_FILES = set()    # home-dir rc files that get category "shell"
+SECRET_HOME = set()    # sensitive home-dir basenames (never content-sniffed)
+SECRET_CONFIG = set()  # sensitive ~/.config basenames
+NOISE_DIRS = set()     # state/cache dirs living under ~/.config
+GENERATED_EXTS = set()       # machine-generated file extensions (.-prefixed)
+GENERATED_DIR_NAMES = set()  # machine-generated directory basenames
 
 HOME_EXCLUDE = {".config", ".cache", ".local"}  # scanned as their own roots
 
@@ -132,6 +74,69 @@ _TEXT_BYTES = bytes(range(0x20, 0x7F)) + b"\t\n\r\x0b\x0c" + bytes(range(0x80, 0
 def die(msg):
     print(f"inventory.py: error: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+# --------------------------------------------------------------------------
+# Configuration (required TOML — the source of truth for the tables above)
+
+def default_config_path():
+    """The inventory-config.toml shipped alongside this script."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "inventory-config.toml")
+
+
+def _table(cfg, name):
+    sec = cfg.get(name, {})
+    if not isinstance(sec, dict):
+        die(f"config: [{name}] must be a table")
+    return sec
+
+
+def _str_list(table, key, ctx):
+    vals = table.get(key, [])
+    if not isinstance(vals, list) or not all(isinstance(v, str) for v in vals):
+        die(f"config: {ctx} must be an array of strings")
+    return vals
+
+
+def load_config(path):
+    """Populate the classification tables from a TOML config, replacing whatever
+    they held. The config is required: a missing or malformed file is a hard
+    error, since without it there are no tables to classify against.
+    """
+    global PROGRAMS, REGISTRY_BY_PATH, SHELL_FILES, SECRET_HOME, SECRET_CONFIG
+    global NOISE_DIRS, GENERATED_EXTS, GENERATED_DIR_NAMES
+    try:
+        with open(path, "rb") as f:
+            cfg = tomllib.load(f)
+    except FileNotFoundError:
+        die(f"config file not found: {path}\n"
+            "  inventory.py requires its TOML config (ships as "
+            "inventory-config.toml next to the script); pass --config PATH "
+            "to use another copy")
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        die(f"cannot read config {path!r}: {e}")
+
+    programs = _table(cfg, "programs")
+    parsed = {}
+    for name, info in programs.items():
+        if not isinstance(info, dict) or not isinstance(info.get("paths"), list):
+            die(f"config: program {name!r} needs a 'paths' array")
+        parsed[name] = info
+    PROGRAMS = parsed
+    REGISTRY_BY_PATH = {p: prog for prog, i in PROGRAMS.items() for p in i["paths"]}
+
+    SHELL_FILES = set(_str_list(_table(cfg, "shell"), "files", "[shell].files"))
+    secrets = _table(cfg, "secrets")
+    SECRET_HOME = set(_str_list(secrets, "home", "[secrets].home"))
+    SECRET_CONFIG = set(_str_list(secrets, "config", "[secrets].config"))
+    NOISE_DIRS = set(_str_list(_table(cfg, "noise"), "dirs", "[noise].dirs"))
+    generated = _table(cfg, "generated")
+    GENERATED_DIR_NAMES = set(_str_list(generated, "dir_names",
+                                        "[generated].dir_names"))
+    # Normalize to the leading-dot lowercase form probe_file compares against.
+    GENERATED_EXTS = {(e if e.startswith(".") else "." + e).lower()
+                      for e in _str_list(generated, "exts", "[generated].exts")}
 
 
 # --------------------------------------------------------------------------
@@ -728,6 +733,7 @@ def cmd_scan(args):
     if shutil.which("pacman") is None:
         die("pacman not found on PATH — this tool needs Arch's pacman for "
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
+    load_config(args.config or default_config_path())
     inv = build_inventory(args, os.path.abspath(home))
     if args.json:
         json.dump(inv, sys.stdout, indent=2)
@@ -769,6 +775,9 @@ def parse_args(argv):
                    help="hide entries scoring below N from the listing")
     s.add_argument("--root", action="append", default=[], metavar="PATH",
                    help="add an extra scan root (repeatable)")
+    s.add_argument("--config", metavar="PATH",
+                   help="TOML config with the classification tables "
+                        "(default: inventory-config.toml next to the script)")
     s.set_defaults(func=cmd_scan)
 
     h = sub.add_parser("health", help="report on a saved `scan --json` inventory")
