@@ -227,9 +227,12 @@ class HealthTest(unittest.TestCase):
         inv = {"meta": {"host": "test", "scanned_at": "now"},
                "entries": [rec(program="polybar", installed=False)]}
         out = inventory.render_health(inv, "inv.json")
-        self.assertIn("1 programs", out)
-        self.assertIn("Needs attention:", out)
-        self.assertIn("polybar", out)
+        self.assertIn("# config inventory — health check", out)  # Markdown title
+        self.assertIn("**1 program checked**", out)              # singular
+        self.assertIn("### Needs attention", out)
+        self.assertIn("## polybar", out)                         # section header
+        self.assertIn("⚠️", out)                                 # orphan is a WARN
+        self.assertTrue(out.endswith("\n"))
 
 
 if __name__ == "__main__":

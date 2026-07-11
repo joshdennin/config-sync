@@ -2,7 +2,8 @@
 """Read-only inventory of user config/dotfiles on an Arch/CachyOS system.
 
 scan   — discover config entries under home, classify them, print a report
-health — read a saved `scan --json` inventory and print a checkhealth report
+health — read a saved `scan --json` inventory and print a Markdown
+         checkhealth-style report (inspired by Neovim's :checkhealth)
 
 scan flags:
   --json               emit the complete structured inventory to stdout
@@ -26,9 +27,9 @@ is a hard error. The shipped file documents every section — [programs],
 [shell], [secrets], [noise], [generated] — and is edited by hand to teach the
 tool new programs or stores.
 
-Example — save a structured inventory, then run a health check on it:
+Example — save a structured inventory, then render a health report to Markdown:
   inventory.py scan --json > inventory.json
-  inventory.py health inventory.json
+  inventory.py health inventory.json > health.md
 
 The script never writes, moves, or deletes anything; its only side effects are
 filesystem reads and read-only `pacman` / `git` queries.
@@ -687,6 +688,17 @@ def section_findings(recs):
     return f
 
 
+# Severity → Markdown bullet icon, echoing Neovim's :checkhealth glyphs.
+SEV_ICON = {"OK": "✅", "INFO": "ℹ️", "WARN": "⚠️", "ERROR": "❌"}
+
+# Command-shaped suggestions get wrapped in inline code; prose is left plain.
+_CMD_PREFIXES = ("git ", "pacman ", "rm ", "ln ", "cp ", "mv ")
+
+
+def md_suggestion(text):
+    return f"`{text}`" if text.startswith(_CMD_PREFIXES) else text
+
+
 def render_health(inv, source):
     sections = {}  # name -> records, in inventory order; unattributed last
     for rec in inv["entries"]:
@@ -694,33 +706,49 @@ def render_health(inv, source):
     if "unattributed" in sections:
         sections["unattributed"] = sections.pop("unattributed")
 
-    meta = inv.get("meta", {})
-    out = [f"config inventory — health check       "
-           f"{datetime.now():%Y-%m-%d %H:%M}   host: {meta.get('host', '?')}",
-           f"source: {source}  (scanned {meta.get('scanned_at', '?')})", ""]
+    # Findings are computed up front so the summary can lead the document.
+    computed = [(name, section_findings(recs)) for name, recs in sections.items()]
     totals = Counter()
     attention = []
-    for name, recs in sections.items():
-        findings = section_findings(recs)
-        out.append(name)
-        for sev, text, suggestion in findings:
+    for name, findings in computed:
+        for sev, _, _ in findings:
             totals[sev] += 1
-            out.append(f"  {sev:<7}{text}")
-            if suggestion:
-                out.append(f"         → {suggestion}")
-        out.append("")
         bad = [t for s, t, _ in findings if s in ("WARN", "ERROR")]
         if bad:
             attention.append((name, "; ".join(t.removeprefix("git: ") for t in bad)))
+    programs = sum(1 for name, _ in computed if name != "unattributed")
 
-    programs = sum(1 for n in sections if n != "unattributed")
-    out.append(f"Summary: {programs} programs · {totals['OK']} OK · {totals['WARN']} WARN"
-               f" · {totals['ERROR']} ERROR · {totals['INFO']} INFO")
+    meta = inv.get("meta", {})
+    out = [
+        "# config inventory — health check",
+        "",
+        f"`{meta.get('host', '?')}` · source `{source}` · "
+        f"scanned `{meta.get('scanned_at', '?')}` · "
+        f"checked `{datetime.now():%Y-%m-%d %H:%M}`",
+        "",
+        "## Summary",
+        "",
+        f"**{programs} program{'' if programs == 1 else 's'} checked** — "
+        f"{SEV_ICON['OK']} {totals['OK']} OK · "
+        f"{SEV_ICON['WARN']} {totals['WARN']} WARN · "
+        f"{SEV_ICON['ERROR']} {totals['ERROR']} ERROR · "
+        f"{SEV_ICON['INFO']} {totals['INFO']} INFO",
+        "",
+    ]
     if attention:
-        out.append("Needs attention:")
-        width = max(len(n) for n, _ in attention)
-        out += [f"  • {n:<{width}}  — {msg}" for n, msg in attention]
-    return "\n".join(out)
+        out += ["### Needs attention", ""]
+        out += [f"- **{n}** — {msg}" for n, msg in attention]
+        out.append("")
+
+    for name, findings in computed:
+        out += [f"## {name}", ""]
+        for sev, text, suggestion in findings:
+            out.append(f"- {SEV_ICON[sev]} {text}")
+            if suggestion:
+                out.append(f"  - ↳ {md_suggestion(suggestion)}")
+        out.append("")
+
+    return "\n".join(out).rstrip() + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -752,7 +780,7 @@ def cmd_health(args):
     if not isinstance(inv, dict) or not isinstance(inv.get("entries"), list):
         die(f"{args.inventory!r} is not a valid inventory "
             "(expected the {meta, entries} object written by `scan --json`)")
-    print(render_health(inv, args.inventory))
+    sys.stdout.write(render_health(inv, args.inventory))
     return 0
 
 
@@ -780,7 +808,9 @@ def parse_args(argv):
                         "(default: inventory-config.toml next to the script)")
     s.set_defaults(func=cmd_scan)
 
-    h = sub.add_parser("health", help="report on a saved `scan --json` inventory")
+    h = sub.add_parser("health",
+                       help="render a Markdown health report for a saved "
+                            "`scan --json` inventory")
     h.add_argument("inventory", help="inventory file written by `scan --json`")
     h.set_defaults(func=cmd_health)
     return p.parse_args(argv)
