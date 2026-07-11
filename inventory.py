@@ -4,6 +4,22 @@
 scan   — discover config entries under home, classify them, print a report
 health — read a saved `scan --json` inventory and print a checkhealth report
 
+scan flags:
+  --json               emit the complete structured inventory to stdout
+  --generated          show machine-generated entries in the listing
+  --all                also scan the state and cache roots (implies --generated)
+  --secrets            show secret-flagged entries in the listing
+  --only-orphans       restrict the listing to orphan entries
+  --min-relevance N    hide entries scoring below N from the listing (default 0)
+  --root PATH          add an extra scan root, categorized "unknown" (repeatable)
+
+health arguments:
+  inventory            path to an inventory file written by `scan --json`
+
+Example — save a structured inventory, then run a health check on it:
+  inventory.py scan --json > inventory.json
+  inventory.py health inventory.json
+
 The script never writes, moves, or deletes anything; its only side effects are
 filesystem reads and read-only `pacman` / `git` queries.
 """
