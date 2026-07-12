@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "config-sync"
+version = "0.1.0"
+description = "Inventory, health-check, and manage dotfiles (adopt / link / unlink) on an Arch/CachyOS system"
+requires-python = ">=3.11"
+dependencies = ["tomli-w>=1.0"]
+
+[project.scripts]
+config-sync = "configsync.cli:main"
+
+[tool.setuptools]
+packages = ["configsync"]
+
+[tool.setuptools.package-data]
+configsync = ["inventory-config.toml"]

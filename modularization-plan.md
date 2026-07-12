@@ -230,17 +230,89 @@ file *is* the review-and-choose surface, so nothing is ever silently dropped.
 - Dry-run by default (`unlink_survey` + `unlink_report`); `--apply` to act. This is
   the reversibility guarantee made operational.
 
-## Step 9 — Package split + packaging
+## Step 9 — Package split + packaging ✅ DONE
 
-Mechanical, done last behind green tests at every prior step.
+Split into the `configsync/` package (inventory 612, sync 446, report 272, cli
+249, fsops 74 lines) + `__main__`/`__init__`; tests split into a `tests/`
+package (helpers + test_inventory/test_fsops/test_report/test_sync); all 58 green
+via `python -m unittest discover -t . -s tests`. `pyproject.toml` added with the
+`config-sync = configsync.cli:main` console script and `tomli-w` dependency;
+`pip install -e .` verified the entry point (`config-sync scan|health` round-trip
+works). The circular-import trap was avoided exactly as planned: **repo mapping
+stayed in `inventory`, manifest moved to `sync`**, so `inventory` imports stdlib
+only (never `fsops`) and `sync` is the sole `fsops` importer. Only test patch
+target that moved: `git_init_commit` (inventory → sync). `inventory-config.toml`
+moved into the package as package-data.
 
-- Split the single file into the 5-file `configsync/` layout above. The
-  `capture`/`status_counts`/`_git_cache` monkeypatch seam stays intact as functions
-  in `inventory.py`.
-- Split `test_inventory.py` to mirror the layout (`test_inventory`, `test_report`,
-  `test_fsops`, `test_sync`); update import paths.
-- Add `pyproject.toml` with the `config-sync = configsync.cli:main` console script
-  and its runtime dependencies (currently just `tomli_w`; keep the set minimal).
+Mostly mechanical, but the module boundaries hid a circular-import trap, so the
+dependency graph was pinned down before moving code.
+
+### Dependency graph (must stay acyclic)
+
+```
+fsops  ←────────────  sync
+                       │
+inventory  ←── report  │
+     ↑          ↑      │
+     └──────────┴──────┴──── cli
+```
+
+- `fsops` imports **stdlib only** (leaf; has its own tiny `_ensure_parent`).
+- `inventory` imports stdlib only — the read-only engine. **Never imports fsops.**
+- `report` imports `inventory`. No fsops, no manifest.
+- `sync` imports `inventory` + `fsops`. The **sole** importer of `fsops` and the
+  sole home of writing-git — the safety boundary, enforced structurally.
+- `cli` imports all three and dispatches.
+
+### The trap and its resolution
+
+`is_adoptable` (read-only, in `inventory`) needs `repo_root`, and `save_manifest`
+needs `_ensure_parent`. Naively placing mapping+manifest in `sync` makes
+`inventory → sync → inventory` a cycle **and** forces `inventory → fsops`.
+Resolution:
+
+- **Repo mapping (`REPO_DIRNAME`, `repo_root`, `program_dirname`, `repo_path_for`)
+  → `inventory`.** It is pure path logic (no fs writes), and `is_adoptable`
+  legitimately needs `repo_root` to exclude the managed repo. Keeps `inventory`
+  pure and import-free of fsops.
+- **Manifest (load/save/entry) → `sync`.** Only the actions use it; `save_manifest`
+  uses `fsops._ensure_parent`, which `sync` may import.
+- **`display_path` → `inventory`** (shared pure helper used by both `report` and
+  `sync`); `shorten`/`git_token`/`badges`/`is_visible` → `report`.
+
+### Function → file
+
+- **inventory.py**: `Config`/`load_config`, probes, the `capture`/`status_counts`/
+  `git_record`/`_git_cache` seam, `Entry`, scan (`build_inventory`/`analyze`/
+  `score`/`categorize`/…), `is_adoptable`, `die`/`require_home`/`config_home`,
+  `display_path`, and repo **mapping**.
+- **fsops.py**: `FsError`, `_ensure_parent`, `safe_copy`/`safe_move`/`safe_symlink`,
+  `remove_symlink`, `backup`, `restore`.
+- **report.py**: `is_visible`, `shorten`, `git_token`, `badges`, `report_listing`,
+  health (`section_key`/`section_findings`/`render_health`/`SEV_ICON`/…),
+  `report_json`/`report_health`/`REPORTERS`.
+- **sync.py**: **manifest**, `tidy_*`, `adopt_*` (+ `git_init_commit`,
+  `expand_home`), `link_*`, `unlink_*`, `ensure_repo_gitignore`, `_tilde`.
+- **cli.py**: `cmd_*`, `parse_args`, `main`, `__main__` guard.
+
+### Monkeypatch target migration (tests)
+
+- `inventory.capture`, `inventory.status_counts`, `inventory.shutil.which`,
+  `inventory._git_cache` — **unchanged** (all stay in `inventory`).
+- `inventory.git_init_commit` → **`sync.git_init_commit`** (the only target that moves).
+
+### Execution order (green after each)
+
+1. `configsync/__init__.py`; `git mv inventory.py configsync/inventory.py`.
+2. Extract `fsops.py` (leaf first), then `report.py`, then `sync.py`, then
+   `cli.py`; trim `inventory.py` to the core. Each new module imports siblings by
+   name so existing bare calls keep working.
+3. **Phase A** — keep the single `test_inventory.py`, fix its module prefixes,
+   get green (validates the source split in isolation).
+4. **Phase B** — split tests into a `tests/` package (`helpers.py` +
+   `test_inventory`/`test_fsops`/`test_report`/`test_sync`); get green.
+5. Add `pyproject.toml`: `config-sync = configsync.cli:main` console script,
+   dependency `tomli_w`, stdlib-only otherwise.
 
 ---
 

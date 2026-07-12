@@ -122,7 +122,7 @@ config = ["gh"]
 dirs = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
         "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
         "Electron", "teams", "Signal", "session", "pulse", "dconf",
-        "ibus", "Trolltech.conf"]
+        "ibus"]
 
 # --------------------------------------------------------------------------
 # Home-directory basenames dropped from the scan entirely — they never reach
