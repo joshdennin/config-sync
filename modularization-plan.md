@@ -215,12 +215,20 @@ file *is* the review-and-choose surface, so nothing is ever silently dropped.
   after linking. A future refinement could split local link-state into a gitignored
   sidecar.
 
-## Step 8 — `unlink` (reverse of link)  — restore originals
+## Step 8 — `unlink` (reverse of link)  — restore originals ✅ DONE
 
-- New `unlink` action (→ `sync.py`) + subcommand. For each linked manifest entry:
-  remove the symlink, **restore the backup** via `fsops`, clear the link state.
-- Dry-run by default; `--apply` to act. This is the reversibility guarantee made
-  operational.
+5 new tests; suite at 58, all green; full adopt→link→unlink round-trip verified.
+
+- New `unlink` action (→ `sync.py`) + subcommand. `unlink_status` classifies each
+  entry (`restore` / `unlink-only` / `not-linked` / `changed`), then `unlink_apply`
+  removes the symlink and **restores the backup** via `fsops.restore`, clearing
+  `linked`/`backup_path`.
+- Safety: only touches a home path that is still the exact symlink config-sync
+  created (`changed` — a real dir/file put back by the user — is left alone).
+  `unlink-only` handles the no-backup case (removes the symlink, nothing to
+  restore). Idempotent; leaves the repo (the `adopt` copy) intact.
+- Dry-run by default (`unlink_survey` + `unlink_report`); `--apply` to act. This is
+  the reversibility guarantee made operational.
 
 ## Step 9 — Package split + packaging
 

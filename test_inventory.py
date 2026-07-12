@@ -491,6 +491,72 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(inventory.link_status(missing), "link-missing")
 
 
+class UnlinkTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.realpath(self.tmp.name)
+        self.conf = os.path.join(self.home, ".config")
+        self.repo = os.path.join(self.conf, "config-sync")
+        for base in (os.path.join(self.repo, "ghostty"), os.path.join(self.conf, "ghostty")):
+            os.makedirs(base)
+            with open(os.path.join(base, "config"), "w") as f:
+                f.write("theme=dark\n")
+        m = inventory.empty_manifest()
+        m["entries"].append(inventory.manifest_entry(
+            "ghostty", os.path.join(self.conf, "ghostty"),
+            os.path.join(self.repo, "ghostty"), "dir"))
+        inventory.save_manifest(self.conf, m)
+        inventory.link_apply(inventory.load_manifest(self.conf), self.home, self.conf)
+
+    def unapply(self):
+        return inventory.unlink_apply(inventory.load_manifest(self.conf), self.home, self.conf)
+
+    def entry(self):
+        return inventory.load_manifest(self.conf)["entries"][0]
+
+    def test_linked_entry_is_a_restore_candidate(self):
+        self.assertEqual(inventory.unlink_status(self.entry()), "restore")
+
+    def test_apply_restores_original_and_clears_state(self):
+        ghostty = os.path.join(self.conf, "ghostty")
+        result = self.unapply()
+        self.assertFalse(os.path.islink(ghostty))                         # symlink gone
+        self.assertTrue(os.path.isfile(os.path.join(ghostty, "config")))  # original back
+        self.assertFalse(os.path.exists(                                  # backup consumed
+            os.path.join(self.repo, ".backups/.config/ghostty/config")))
+        self.assertTrue(os.path.isfile(                                   # repo copy intact
+            os.path.join(self.repo, "ghostty/config")))
+        e = self.entry()
+        self.assertFalse(e["linked"])
+        self.assertEqual(e["backup_path"], "")
+        self.assertEqual(result["restored"], [ghostty])
+
+    def test_reapply_is_idempotent(self):
+        self.unapply()
+        again = self.unapply()
+        self.assertEqual(again["restored"], [])
+        self.assertEqual(again["skipped"],
+                         [(os.path.join(self.conf, "ghostty"), "not-linked")])
+
+    def test_changed_home_is_left_alone(self):
+        # user replaced the symlink with a real dir after linking -> never touch it
+        ghostty = os.path.join(self.conf, "ghostty")
+        os.unlink(ghostty)
+        os.makedirs(ghostty)
+        self.assertEqual(inventory.unlink_status(self.entry()), "changed")
+        result = self.unapply()
+        self.assertEqual(result["restored"], [])
+        self.assertTrue(os.path.isdir(ghostty) and not os.path.islink(ghostty))
+
+    def test_unlink_only_when_no_backup(self):
+        entry = inventory.manifest_entry(
+            "x", os.path.join(self.conf, "ghostty"),
+            os.path.join(self.repo, "ghostty"), "dir")
+        entry["linked"] = True  # linked, but backup_path stays ""
+        self.assertEqual(inventory.unlink_status(entry), "unlink-only")
+
+
 class FsopsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

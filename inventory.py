@@ -11,6 +11,8 @@ adopt  — write an editable plan of discovered configs (curated/extended/
          managed repo at ~/.config/config-sync/, write the manifest, git commit
 link   — report (and with --apply, perform) symlinking of adopted configs from
          the repo back into place, backing up each original first
+unlink — reverse `link`: report (and with --apply, perform) removing the
+         symlinks and restoring the backed-up originals
 
 scan flags:
   --json               emit the complete structured inventory to stdout
@@ -39,6 +41,9 @@ adopt flags:
 
 link flags:
   --apply              create the symlinks (default: report the plan only)
+
+unlink flags:
+  --apply              restore the originals (default: report the plan only)
 
 The classification tables (the known-dotfiles registry, the shell/secret/noise
 lists, and the machine-generated denylists) live in a TOML config, not in the
@@ -1354,6 +1359,76 @@ def link_report(rows, home, applied=False):
 
 
 # --------------------------------------------------------------------------
+# Unlink — reverse of link: remove the symlink and restore the backed-up
+# original, then clear the link state. The reversibility guarantee made
+# operational; it undoes `link` but leaves the repo (the `adopt` copy) intact.
+
+# status -> (label, note); "restore"/"unlink-only" are the actionable states.
+UNLINK_STATUS = {
+    "restore":     ("RESTORE", "remove symlink, restore backup"),
+    "unlink-only": ("UNLINK", "remove symlink (nothing was backed up)"),
+    "not-linked":  ("SKIP", "not linked"),
+    "changed":     ("SKIP", "home is not the symlink config-sync created — left as-is"),
+}
+
+
+def unlink_status(entry):
+    """Where a manifest entry stands relative to being unlinked (pure inspection)."""
+    if not entry.get("linked"):
+        return "not-linked"
+    home_path, repo_path = entry["home_path"], entry["repo_path"]
+    if not os.path.islink(home_path) or \
+            os.path.realpath(home_path) != os.path.realpath(repo_path):
+        return "changed"       # not the symlink we made — do not touch it
+    return "restore" if entry.get("backup_path") else "unlink-only"
+
+
+def unlink_survey(manifest):
+    return [(e, unlink_status(e)) for e in manifest["entries"]]
+
+
+def unlink_apply(manifest, home, conf_home):
+    """Remove each symlink config-sync created and restore its backup, clearing
+    link state. Idempotent — entries that are not linked are left untouched."""
+    restored, skipped = [], []
+    for entry in manifest["entries"]:
+        status = unlink_status(entry)
+        home_path = entry["home_path"]
+        if status not in ("restore", "unlink-only"):
+            skipped.append((home_path, status))
+            continue
+        try:
+            remove_symlink(home_path)
+            if status == "restore":
+                restore(entry["backup_path"], home_path)
+        except (FsError, OSError) as e:
+            skipped.append((home_path, f"error: {e}"))
+            continue
+        entry["linked"] = False
+        entry["backup_path"] = ""
+        restored.append(home_path)
+    if restored:
+        save_manifest(conf_home, manifest)
+    return {"restored": restored, "skipped": skipped}
+
+
+def unlink_report(rows, home, applied=False):
+    print(f"unlink — {'Restored' if applied else 'Unlink plan (restore originals)'}\n")
+    if not rows:
+        print("  nothing to unlink — no adopted configs.")
+        return
+    for entry, status in rows:
+        label, note = UNLINK_STATUS[status]
+        print(f"  {label:<7} {_tilde(entry['home_path'], home)}"
+              + (f"   ({note})" if note else ""))
+    todo = sum(1 for _, s in rows if s in ("restore", "unlink-only"))
+    if not applied:
+        print()
+        print(f"{todo} to restore · run with --apply to undo the links."
+              if todo else "Nothing to unlink.")
+
+
+# --------------------------------------------------------------------------
 # Entry points
 
 def cmd_scan(args):
@@ -1443,6 +1518,26 @@ def cmd_link(args):
     return 0
 
 
+def cmd_unlink(args):
+    home = os.path.abspath(require_home())
+    conf = config_home(home)
+    manifest = load_manifest(conf)
+    if not manifest["entries"]:
+        die("nothing to unlink — no adopted configs")
+    if args.apply:
+        result = unlink_apply(manifest, home, conf)
+        for p in result["restored"]:
+            print(f"  restored {_tilde(p, home)}")
+        for p, status in result["skipped"]:
+            print(f"  skipped {_tilde(p, home)} "
+                  f"({UNLINK_STATUS.get(status, ('', status))[1] or status})")
+        if not result["restored"]:
+            print("Nothing to unlink.")
+    else:
+        unlink_report(unlink_survey(manifest), home)
+    return 0
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="inventory.py", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1505,6 +1600,13 @@ def parse_args(argv):
     ln.add_argument("--apply", action="store_true",
                     help="create the symlinks (default: report the plan only)")
     ln.set_defaults(func=cmd_link)
+
+    ul = sub.add_parser("unlink",
+                        help="reverse `link`: remove the symlinks and restore "
+                             "the backed-up originals")
+    ul.add_argument("--apply", action="store_true",
+                    help="restore the originals (default: report the plan only)")
+    ul.set_defaults(func=cmd_unlink)
     return p.parse_args(argv)
 
 
