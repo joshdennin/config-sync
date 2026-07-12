@@ -46,27 +46,39 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime
 from fnmatch import fnmatch
 
 VERSION = "0.1.0"
 
 # --------------------------------------------------------------------------
-# Classification tables — populated from the TOML config by load_config().
+# Classification tables — loaded from the TOML config into a Config, which is
+# threaded through the scan and health paths (no module-level mutable state).
 # There are no built-in defaults; the shipped inventory-config.toml is the
 # source of truth. (Structural constants that are code behavior, not curated
 # data — HOME_EXCLUDE, CAT_ORDER, _TEXT_BYTES — stay below.)
 
-PROGRAMS = {}          # program -> {"paths": [...], "pkgs"?, "bin"?, "category"?}
-REGISTRY_BY_PATH = {}  # rc-file / config-dir basename -> program (derived)
-PROGRAM_CATEGORY = {}  # program -> category (from TOML), stored on each entry (derived)
-SHELL_FILES = set()    # home-dir rc files that get location "shell"
-SECRET_HOME = set()    # sensitive home-dir basenames (never content-sniffed)
-SECRET_CONFIG = set()  # sensitive ~/.config basenames
-NOISE_DIRS = set()     # state/cache dirs living under ~/.config
-GENERATED_EXTS = set()       # machine-generated file extensions (.-prefixed)
-GENERATED_DIR_NAMES = set()  # machine-generated directory basenames
-EXCLUDE_HOME = []            # home-dir basename globs never recorded (state/junk)
+
+@dataclass(frozen=True)
+class Config:
+    """Classification tables from inventory-config.toml, immutable once built.
+
+    A default-constructed Config is empty and classifies nothing; that is the
+    form `health` uses, since a saved inventory already carries every derived
+    field it needs.
+    """
+    programs: dict = field(default_factory=dict)          # program -> {"paths": [...], "pkgs"?, "bin"?, "category"?}
+    registry_by_path: dict = field(default_factory=dict)  # rc-file / config-dir basename -> program (derived)
+    program_category: dict = field(default_factory=dict)  # program -> category (derived)
+    shell_files: frozenset = field(default_factory=frozenset)    # home-dir rc files that get location "shell"
+    secret_home: frozenset = field(default_factory=frozenset)    # sensitive home-dir basenames (never content-sniffed)
+    secret_config: frozenset = field(default_factory=frozenset)  # sensitive ~/.config basenames
+    noise_dirs: frozenset = field(default_factory=frozenset)     # state/cache dirs living under ~/.config
+    generated_exts: frozenset = field(default_factory=frozenset)       # machine-generated file extensions (.-prefixed)
+    generated_dir_names: frozenset = field(default_factory=frozenset)  # machine-generated directory basenames
+    exclude_home: tuple = ()  # home-dir basename globs never recorded (state/junk)
+
 
 HOME_EXCLUDE = {".config", ".cache", ".local"}  # scanned as their own roots
 
@@ -106,13 +118,10 @@ def _str_list(table, key, ctx):
 
 
 def load_config(path):
-    """Populate the classification tables from a TOML config, replacing whatever
-    they held. The config is required: a missing or malformed file is a hard
-    error, since without it there are no tables to classify against.
+    """Build a Config from a TOML file. The config is required: a missing or
+    malformed file is a hard error, since without it there are no tables to
+    classify against.
     """
-    global PROGRAMS, REGISTRY_BY_PATH, PROGRAM_CATEGORY, SHELL_FILES
-    global SECRET_HOME, SECRET_CONFIG
-    global NOISE_DIRS, GENERATED_EXTS, GENERATED_DIR_NAMES, EXCLUDE_HOME
     try:
         with open(path, "rb") as f:
             cfg = tomllib.load(f)
@@ -132,23 +141,25 @@ def load_config(path):
         if "category" in info and not isinstance(info["category"], str):
             die(f"config: program {name!r} 'category' must be a string")
         parsed[name] = info
-    PROGRAMS = parsed
-    REGISTRY_BY_PATH = {p: prog for prog, i in PROGRAMS.items() for p in i["paths"]}
-    PROGRAM_CATEGORY = {prog: i["category"] for prog, i in PROGRAMS.items()
-                        if isinstance(i.get("category"), str)}
 
-    SHELL_FILES = set(_str_list(_table(cfg, "shell"), "files", "[shell].files"))
     secrets = _table(cfg, "secrets")
-    SECRET_HOME = set(_str_list(secrets, "home", "[secrets].home"))
-    SECRET_CONFIG = set(_str_list(secrets, "config", "[secrets].config"))
-    NOISE_DIRS = set(_str_list(_table(cfg, "noise"), "dirs", "[noise].dirs"))
-    EXCLUDE_HOME = _str_list(_table(cfg, "exclude"), "home", "[exclude].home")
     generated = _table(cfg, "generated")
-    GENERATED_DIR_NAMES = set(_str_list(generated, "dir_names",
-                                        "[generated].dir_names"))
-    # Normalize to the leading-dot lowercase form probe_file compares against.
-    GENERATED_EXTS = {(e if e.startswith(".") else "." + e).lower()
-                      for e in _str_list(generated, "exts", "[generated].exts")}
+    return Config(
+        programs=parsed,
+        registry_by_path={p: prog for prog, i in parsed.items() for p in i["paths"]},
+        program_category={prog: i["category"] for prog, i in parsed.items()
+                          if isinstance(i.get("category"), str)},
+        shell_files=frozenset(_str_list(_table(cfg, "shell"), "files", "[shell].files")),
+        secret_home=frozenset(_str_list(secrets, "home", "[secrets].home")),
+        secret_config=frozenset(_str_list(secrets, "config", "[secrets].config")),
+        noise_dirs=frozenset(_str_list(_table(cfg, "noise"), "dirs", "[noise].dirs")),
+        exclude_home=tuple(_str_list(_table(cfg, "exclude"), "home", "[exclude].home")),
+        generated_dir_names=frozenset(_str_list(generated, "dir_names",
+                                                "[generated].dir_names")),
+        # Normalize to the leading-dot lowercase form probe_file compares against.
+        generated_exts=frozenset((e if e.startswith(".") else "." + e).lower()
+                                 for e in _str_list(generated, "exts", "[generated].exts")),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -192,15 +203,15 @@ def status_counts(top, cap=500):
 # --------------------------------------------------------------------------
 # Content probes (bounded, shallow)
 
-def is_generated_name(name):
+def is_generated_name(name, cfg):
     return (name.endswith("~")
-            or os.path.splitext(name)[1].lower() in GENERATED_EXTS
+            or os.path.splitext(name)[1].lower() in cfg.generated_exts
             or name in {"lock", "LOCK", "lockfile"})
 
 
-def probe_file(path, name, skip_read=False):
+def probe_file(path, name, cfg, skip_read=False):
     """Classify one file: text | json | binary | generated | unknown."""
-    if is_generated_name(name):
+    if is_generated_name(name, cfg):
         return "generated"
     if name.endswith(".json"):
         return "json"
@@ -222,13 +233,13 @@ def probe_file(path, name, skip_read=False):
     return "text" if nontext / len(chunk) <= 0.30 else "binary"
 
 
-def probe_dir(path, skip_read=False, entry_budget=4000, sample_cap=40):
+def probe_dir(path, cfg, skip_read=False, entry_budget=4000, sample_cap=40):
     """Bounded walk: (size estimate, Counter of sampled file classes, capped)."""
     size = seen = 0
     stats = Counter()
     capped = False
     for dirpath, dirnames, filenames in os.walk(path, onerror=lambda e: None):
-        in_generated = dirpath != path and os.path.basename(dirpath) in GENERATED_DIR_NAMES
+        in_generated = dirpath != path and os.path.basename(dirpath) in cfg.generated_dir_names
         for fname in filenames:
             fp = os.path.join(dirpath, fname)
             try:
@@ -237,7 +248,7 @@ def probe_dir(path, skip_read=False, entry_budget=4000, sample_cap=40):
                 continue
             seen += 1
             if not skip_read and sum(stats.values()) < sample_cap:
-                cls = "generated" if in_generated else probe_file(fp, fname)
+                cls = "generated" if in_generated else probe_file(fp, fname, cfg)
                 stats[cls] += 1
             if seen >= entry_budget:
                 capped = True
@@ -257,9 +268,9 @@ def load_pacman_qq():
     return set(out.splitlines()) if out else set()
 
 
-def attribute(name, qq):
+def attribute(name, qq, cfg):
     """Resolve an entry name to (program, registry_hit)."""
-    prog = REGISTRY_BY_PATH.get(name)
+    prog = cfg.registry_by_path.get(name)
     if prog:
         return prog, True
     for cand in (name, name.lstrip(".").lower()):
@@ -268,9 +279,9 @@ def attribute(name, qq):
     return None, False
 
 
-def check_installed(program, qq):
+def check_installed(program, qq, cfg):
     """True when the program is found via pacman or on PATH (best-effort)."""
-    info = PROGRAMS.get(program, {})
+    info = cfg.programs.get(program, {})
     if ({program, *info.get("pkgs", ())} & qq):
         return True
     return shutil.which(info.get("bin", program)) is not None
@@ -381,12 +392,12 @@ def resolve_roots(args, home):
     return roots
 
 
-def categorize(name, root_cat):
+def categorize(name, root_cat, cfg):
     # Precedence: shell > config > home > root default.
     if root_cat == "home":
-        if name in SHELL_FILES:
+        if name in cfg.shell_files:
             return "shell"
-        if name in REGISTRY_BY_PATH:
+        if name in cfg.registry_by_path:
             return "config"
         return "home"
     return root_cat
@@ -422,19 +433,19 @@ def score(name, kind, program, installed, is_git_repo, registry_hit,
     return total, terms
 
 
-def analyze(lpath, real, root_cat, home, qq):
+def analyze(lpath, real, root_cat, home, qq, cfg):
     name = os.path.basename(lpath)
-    location = categorize(name, root_cat)
-    secret = ((root_cat == "home" and name in SECRET_HOME)
-              or (root_cat == "config" and name in SECRET_CONFIG))
-    noise = root_cat == "config" and name in NOISE_DIRS
+    location = categorize(name, root_cat, cfg)
+    secret = ((root_cat == "home" and name in cfg.secret_home)
+              or (root_cat == "config" and name in cfg.secret_config))
+    noise = root_cat == "config" and name in cfg.noise_dirs
     flags = [f for f, on in (("secret", secret), ("noise", noise)) if on]
 
     kind = "dir" if os.path.isdir(real) else "file"
     st = os.stat(real)
 
-    program, registry_hit = attribute(name, qq)
-    installed = check_installed(program, qq) if program else None
+    program, registry_hit = attribute(name, qq, cfg)
+    installed = check_installed(program, qq, cfg) if program else None
     if program is None and root_cat == "unknown":
         owner = pacman_owner(real)
         if owner:
@@ -444,7 +455,7 @@ def analyze(lpath, real, root_cat, home, qq):
     git = git_record(anchor) if anchor else None
 
     if kind == "dir":
-        size, stats, _ = probe_dir(real, skip_read=secret)
+        size, stats, _ = probe_dir(real, cfg, skip_read=secret)
         files = sum(stats.values())
         text_only = (stats["text"] > 0 and stats["binary"] == 0
                      and stats["generated"] == 0 and size < 5 * 1024 * 1024)
@@ -452,7 +463,7 @@ def analyze(lpath, real, root_cat, home, qq):
         content_ok = files == 0 or files > stats["binary"] + stats["generated"]
     else:
         size = st.st_size
-        cls = probe_file(real, name, skip_read=secret)
+        cls = probe_file(real, name, cfg, skip_read=secret)
         text_only = cls == "text"
         json_heavy = cls == "json"
         content_ok = cls != "binary" and cls != "generated"
@@ -478,7 +489,7 @@ def analyze(lpath, real, root_cat, home, qq):
         "is_git_repo": git is not None,
         "git": git,
         "program": program,
-        "category": PROGRAM_CATEGORY.get(program),
+        "category": cfg.program_category.get(program),
         "installed": installed,
         "flags": flags,
         "relevance": relevance,
@@ -486,11 +497,11 @@ def analyze(lpath, real, root_cat, home, qq):
     }
 
 
-def dangling_entry(lpath, root_cat, home):
+def dangling_entry(lpath, root_cat, home, cfg):
     return {
         "path": lpath,
         "rel": rel_home(lpath, home),
-        "location": categorize(os.path.basename(lpath), root_cat),
+        "location": categorize(os.path.basename(lpath), root_cat, cfg),
         "kind": None, "via_symlink": None, "size": None, "mtime": None,
         "editable": None, "is_git_repo": False, "git": None,
         "program": None, "category": None, "installed": None,
@@ -498,7 +509,7 @@ def dangling_entry(lpath, root_cat, home):
     }
 
 
-def build_inventory(args, home):
+def build_inventory(args, home, cfg):
     qq = load_pacman_qq()
     roots = resolve_roots(args, home)
     entries = {}  # keyed on resolved real path -> dedup collapses links + target
@@ -509,13 +520,13 @@ def build_inventory(args, home):
             continue
         for name in names:
             if root_cat == "home" and (not name.startswith(".") or name in HOME_EXCLUDE
-                                       or any(fnmatch(name, p) for p in EXCLUDE_HOME)):
+                                       or any(fnmatch(name, p) for p in cfg.exclude_home)):
                 continue
             lpath = os.path.join(root, name)
             real = os.path.realpath(lpath)
             if not os.path.exists(real):
                 if os.path.islink(lpath):
-                    entries[lpath] = dangling_entry(lpath, root_cat, home)
+                    entries[lpath] = dangling_entry(lpath, root_cat, home, cfg)
                 continue
             if real in entries:
                 # Roots are scanned in priority order, so the existing entry
@@ -524,7 +535,7 @@ def build_inventory(args, home):
                 if lpath != real:
                     rec["via_symlink"] = (rec["via_symlink"] or []) + [lpath]
                 continue
-            entries[real] = analyze(lpath, real, root_cat, home, qq)
+            entries[real] = analyze(lpath, real, root_cat, home, qq, cfg)
     meta = {"tool": "inventory.py", "version": VERSION, "host": platform.node(),
             "scanned_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "roots": [r for r, _ in roots], "all": args.all}
@@ -628,11 +639,11 @@ def render_listing(inv, args):
 # --------------------------------------------------------------------------
 # Health (pure functions of stored records)
 
-def section_key(rec):
+def section_key(rec, cfg):
     prog = rec["program"]
     if not prog:
         return None
-    return PROGRAMS.get(prog, {}).get("bin", prog)  # command name reads best
+    return cfg.programs.get(prog, {}).get("bin", prog)  # command name reads best
 
 
 def section_findings(recs):
@@ -715,10 +726,10 @@ def md_suggestion(text):
 UNCATEGORIZED = "Uncategorized"  # health group for programs with no category
 
 
-def render_health(inv, source):
+def render_health(inv, source, cfg=Config()):
     sections = {}  # section title -> records, in inventory order; unattributed last
     for rec in inv["entries"]:
-        sections.setdefault(section_key(rec) or "unattributed", []).append(rec)
+        sections.setdefault(section_key(rec, cfg) or "unattributed", []).append(rec)
     if "unattributed" in sections:
         sections["unattributed"] = sections.pop("unattributed")
 
@@ -789,8 +800,8 @@ def cmd_scan(args):
     if shutil.which("pacman") is None:
         die("pacman not found on PATH — this tool needs Arch's pacman for "
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
-    load_config(args.config or default_config_path())
-    inv = build_inventory(args, os.path.abspath(home))
+    cfg = load_config(args.config or default_config_path())
+    inv = build_inventory(args, os.path.abspath(home), cfg)
     if args.json:
         json.dump(inv, sys.stdout, indent=2)
         print()

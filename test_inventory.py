@@ -87,7 +87,7 @@ class ScanTest(unittest.TestCase):
         self.home = os.path.realpath(self.tmp.name)
         make_fixture(self.home)
         # Classification tables live in the shipped TOML; load it before scanning.
-        inventory.load_config(inventory.default_config_path())
+        self.cfg = inventory.load_config(inventory.default_config_path())
         fake = FakeGit(os.path.join(self.home, "dotfiles"))
         patches = [
             mock.patch.object(inventory, "capture", fake.capture),
@@ -106,7 +106,7 @@ class ScanTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def scan(self, **kw):
-        inv = inventory.build_inventory(scan_args(**kw), self.home)
+        inv = inventory.build_inventory(scan_args(**kw), self.home, self.cfg)
         return inv, {e["rel"]: e for e in inv["entries"]}
 
     def test_symlink_resolution_and_dedup(self):
