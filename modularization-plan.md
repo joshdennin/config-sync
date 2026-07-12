@@ -195,14 +195,25 @@ file *is* the review-and-choose surface, so nothing is ever silently dropped.
   entries already in the manifest or present in the repo are skipped.
 - Reversal is trivial (originals preserved): removing the repo undoes adopt.
 
-## Step 7 — Feature 2: `link` (deploy repo → filesystem)  — BACK UP then symlink
+## Step 7 — Feature 2: `link` (deploy repo → filesystem)  — BACK UP then symlink ✅ DONE
 
-- New `link` action (→ `sync.py`) + subcommand. For each manifest entry not yet
-  linked: **back up** the home original via `fsops`, record `backup_path`, create a
-  symlink home→repo, mark `linked` in the manifest.
-- Never overwrite; on collision back up or skip.
-- Dry-run by default; `--apply` to act. Idempotent: already-linked entries (symlink
-  resolving into the repo) are skipped.
+5 new tests; suite at 53, all green; end-to-end adopt→link verified on a temp home.
+
+- New `link` action (→ `sync.py`) + subcommand. For each manifest entry: `link_status`
+  classifies it (`link` / `link-missing` / `done` / `conflict` / `no-source`), then
+  `link_apply` **backs up** the home original via `fsops.backup`, records
+  `backup_path`, creates a symlink home→repo, and marks `linked` in the manifest.
+- Never overwrites (a home symlink pointing elsewhere is a `conflict` and left as-is).
+- Dry-run by default (`link_survey` + `link_report`); `--apply` to act. Idempotent:
+  a home symlink already resolving into the repo is `done` and skipped.
+- **Backup location** settled: `~/.config/config-sync/.backups/` (mirroring home
+  paths). Since that sits inside the git repo, `ensure_repo_gitignore` writes a
+  `.gitignore` for `.backups/` — added at adopt time (committed) and defensively at
+  link time — so backups never enter git history.
+- Known wart (out of scope): the tracked `manifest.toml` is mutated in place by
+  `link` (per-machine `linked`/`backup_path`), so it shows as a working-tree change
+  after linking. A future refinement could split local link-state into a gitignored
+  sidecar.
 
 ## Step 8 — `unlink` (reverse of link)  — restore originals
 

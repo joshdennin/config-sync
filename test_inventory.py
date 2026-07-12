@@ -421,6 +421,76 @@ class AdoptApplyTest(unittest.TestCase):
         self.assertEqual(again["skipped"], ["~/.tmux.conf"])  # already adopted
 
 
+class LinkTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.realpath(self.tmp.name)
+        self.conf = os.path.join(self.home, ".config")
+        self.repo = os.path.join(self.conf, "config-sync")
+        # simulate a completed adopt: repo content + original still in place
+        for base in (os.path.join(self.repo, "ghostty"), os.path.join(self.conf, "ghostty")):
+            os.makedirs(base)
+            with open(os.path.join(base, "config"), "w") as f:
+                f.write("theme=dark\n")
+        m = inventory.empty_manifest()
+        m["entries"].append(inventory.manifest_entry(
+            "ghostty", os.path.join(self.conf, "ghostty"),
+            os.path.join(self.repo, "ghostty"), "dir"))
+        inventory.save_manifest(self.conf, m)
+
+    def apply(self):
+        return inventory.link_apply(inventory.load_manifest(self.conf), self.home, self.conf)
+
+    def entry(self):
+        return inventory.load_manifest(self.conf)["entries"][0]
+
+    def test_real_original_is_a_link_candidate(self):
+        self.assertEqual(inventory.link_status(self.entry()), "link")
+
+    def test_apply_backs_up_then_symlinks_and_records_state(self):
+        ghostty = os.path.join(self.conf, "ghostty")
+        result = self.apply()
+        self.assertTrue(os.path.islink(ghostty))                       # replaced by a symlink
+        self.assertEqual(os.path.realpath(ghostty),
+                         os.path.join(self.repo, "ghostty"))           # ...into the repo
+        self.assertTrue(os.path.isfile(                                # original backed up
+            os.path.join(self.repo, ".backups/.config/ghostty/config")))
+        e = self.entry()
+        self.assertTrue(e["linked"])
+        self.assertTrue(e["backup_path"])
+        self.assertEqual(result["linked"], [ghostty])
+
+    def test_backups_are_git_ignored(self):
+        self.apply()
+        with open(os.path.join(self.repo, ".gitignore")) as f:
+            self.assertIn(".backups/", f.read())
+
+    def test_reapply_is_idempotent(self):
+        self.apply()
+        again = self.apply()
+        self.assertEqual(again["linked"], [])
+        self.assertEqual(again["skipped"], [(os.path.join(self.conf, "ghostty"), "done")])
+
+    def test_status_variants(self):
+        # repo content missing
+        gone_repo = inventory.manifest_entry(
+            "x", os.path.join(self.conf, "ghostty"), os.path.join(self.repo, "nope"), "dir")
+        self.assertEqual(inventory.link_status(gone_repo), "no-source")
+        # home is a symlink pointing somewhere other than the repo
+        other = os.path.join(self.home, "other")
+        os.makedirs(other)
+        weird = os.path.join(self.conf, "weird")
+        os.symlink(other, weird)
+        conflict = inventory.manifest_entry(
+            "x", weird, os.path.join(self.repo, "ghostty"), "dir")
+        self.assertEqual(inventory.link_status(conflict), "conflict")
+        # original gone, repo content present -> symlink with no backup
+        missing = inventory.manifest_entry(
+            "x", os.path.join(self.conf, "gone"), os.path.join(self.repo, "ghostty"), "dir")
+        self.assertEqual(inventory.link_status(missing), "link-missing")
+
+
 class FsopsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

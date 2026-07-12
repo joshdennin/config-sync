@@ -9,6 +9,8 @@ tidy   — report (and with --move, perform) safe XDG relocations of a
 adopt  — write an editable plan of discovered configs (curated/extended/
          everything tier); with --apply, copy the plan's entries into the
          managed repo at ~/.config/config-sync/, write the manifest, git commit
+link   — report (and with --apply, perform) symlinking of adopted configs from
+         the repo back into place, backing up each original first
 
 scan flags:
   --json               emit the complete structured inventory to stdout
@@ -34,6 +36,9 @@ adopt flags:
   --plan PATH          plan file to write, then read with --apply
   --apply              build the repo from the (edited) plan
   --config PATH        TOML classification config
+
+link flags:
+  --apply              create the symlinks (default: report the plan only)
 
 The classification tables (the known-dotfiles registry, the shell/secret/noise
 lists, and the machine-generated denylists) live in a TOML config, not in the
@@ -1238,10 +1243,114 @@ def adopt_apply(plan, home, conf_home, cfg):
     committed = False
     if copied:
         save_manifest(conf_home, manifest)
+        ensure_repo_gitignore(repo_root(conf_home))  # keep backups out of git
         committed = git_init_commit(repo_root(conf_home),
                                     f"adopt {len(copied)} config(s) via config-sync")
     return {"copied": copied, "skipped": skipped, "committed": committed,
             "repo": repo_root(conf_home)}
+
+
+# --------------------------------------------------------------------------
+# Link — deploy the repo back into the filesystem: for each adopted entry, move
+# the home original aside into the backups tree and replace it with a symlink
+# into the repo. Reversible via `unlink` (step 8), which restores the backup.
+# Backups live under the repo but are git-ignored so they never get committed.
+
+BACKUP_DIRNAME = ".backups"
+
+# status -> (label, note); "link"/"link-missing" are the actionable states.
+LINK_STATUS = {
+    "link":         ("LINK", "back up original, then symlink"),
+    "link-missing": ("LINK", "original absent — symlink only"),
+    "done":         ("DONE", "already linked into the repo"),
+    "conflict":     ("SKIP", "home is a symlink elsewhere — left as-is"),
+    "no-source":    ("SKIP", "repo content missing"),
+}
+
+
+def backups_root(conf_home):
+    return os.path.join(repo_root(conf_home), BACKUP_DIRNAME)
+
+
+def ensure_repo_gitignore(repo):
+    """Keep the backups tree out of the repo's git history (idempotent)."""
+    path = os.path.join(repo, ".gitignore")
+    line = BACKUP_DIRNAME + "/"
+    existing = ""
+    if os.path.exists(path):
+        with open(path) as f:
+            existing = f.read()
+        if line in existing.split():
+            return
+    _ensure_parent(path)
+    with open(path, "a") as f:
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
+        f.write(line + "\n")
+
+
+def link_status(entry):
+    """Where a manifest entry stands relative to being linked (pure inspection)."""
+    home_path, repo_path = entry["home_path"], entry["repo_path"]
+    if not os.path.lexists(repo_path):
+        return "no-source"
+    if os.path.islink(home_path):
+        if os.path.realpath(home_path) == os.path.realpath(repo_path):
+            return "done"      # already a symlink into the repo
+        return "conflict"      # a symlink to something else — leave it alone
+    if os.path.lexists(home_path):
+        return "link"          # a real file/dir — back it up, then symlink
+    return "link-missing"      # original gone — just place the symlink
+
+
+def link_survey(manifest):
+    return [(e, link_status(e)) for e in manifest["entries"]]
+
+
+def link_apply(manifest, home, conf_home):
+    """Back up + symlink every actionable entry; record link state in the
+    manifest. Idempotent — already-linked entries are left untouched."""
+    ensure_repo_gitignore(repo_root(conf_home))
+    backups = backups_root(conf_home)
+    linked, skipped = [], []
+    for entry in manifest["entries"]:
+        status = link_status(entry)
+        home_path, repo_path = entry["home_path"], entry["repo_path"]
+        if status not in ("link", "link-missing"):
+            skipped.append((home_path, status))
+            continue
+        try:
+            bpath = backup(home_path, backups, home) if status == "link" else ""
+            safe_symlink(repo_path, home_path)
+        except (FsError, OSError) as e:
+            skipped.append((home_path, f"error: {e}"))
+            continue
+        entry["linked"] = True
+        entry["backup_path"] = bpath
+        linked.append(home_path)
+    if linked:
+        save_manifest(conf_home, manifest)
+    return {"linked": linked, "skipped": skipped}
+
+
+def _tilde(path, home):
+    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
+
+
+def link_report(rows, home, applied=False):
+    print(f"link — {'Linked' if applied else 'Link plan (home → repo)'}\n")
+    if not rows:
+        print("  nothing to link — no adopted configs.")
+        return
+    for entry, status in rows:
+        label, note = LINK_STATUS[status]
+        arrow = f"{_tilde(entry['home_path'], home)} → {_tilde(entry['repo_path'], home)}"
+        print(f"  {label:<5} {arrow}" + (f"   ({note})" if note else ""))
+    todo = sum(1 for _, s in rows if s in ("link", "link-missing"))
+    if not applied:
+        print()
+        print(f"{todo} to link · run with --apply to create the symlinks."
+              if todo else "Nothing to link.")
 
 
 # --------------------------------------------------------------------------
@@ -1314,6 +1423,26 @@ def cmd_adopt(args):
     return 0
 
 
+def cmd_link(args):
+    home = os.path.abspath(require_home())
+    conf = config_home(home)
+    manifest = load_manifest(conf)
+    if not manifest["entries"]:
+        die("nothing to link — no adopted configs "
+            "(run `config-sync adopt --apply` first)")
+    if args.apply:
+        result = link_apply(manifest, home, conf)
+        for p in result["linked"]:
+            print(f"  linked {_tilde(p, home)}")
+        for p, status in result["skipped"]:
+            print(f"  skipped {_tilde(p, home)} ({LINK_STATUS.get(status, ('', status))[1] or status})")
+        if not result["linked"]:
+            print("Nothing to link.")
+    else:
+        link_report(link_survey(manifest), home)
+    return 0
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="inventory.py", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1369,6 +1498,13 @@ def parse_args(argv):
     a.add_argument("--config", metavar="PATH",
                    help="TOML classification config (default: next to the script)")
     a.set_defaults(func=cmd_adopt)
+
+    ln = sub.add_parser("link",
+                        help="symlink adopted configs from the repo back into "
+                             "place (backs up each original first)")
+    ln.add_argument("--apply", action="store_true",
+                    help="create the symlinks (default: report the plan only)")
+    ln.set_defaults(func=cmd_link)
     return p.parse_args(argv)
 
 
