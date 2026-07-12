@@ -114,7 +114,7 @@ class ScanTest(unittest.TestCase):
         e = by_rel["dotfiles/nvim"]
         self.assertEqual(e["via_symlink"], [os.path.join(self.home, ".config/nvim")])
         self.assertNotIn(".config/nvim", by_rel)
-        self.assertEqual(e["category"], "config")  # from the link's root
+        self.assertEqual(e["location"], "config")  # from the link's root
         self.assertEqual(e["kind"], "dir")
 
     def test_attribution_and_relevance(self):
@@ -127,7 +127,7 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(nvim["git"]["dirty"], {"modified": 1, "untracked": 0})
 
         tmux = by_rel[".tmux.conf"]
-        self.assertEqual(tmux["category"], "config")
+        self.assertEqual(tmux["location"], "config")
         self.assertEqual(tmux["relevance"], 80)  # 30 + 25 + 15 + 10 rc bonus
         self.assertIn("known rc file (.tmux.conf)",
                       [t["label"] for t in tmux["relevance_terms"]])
@@ -169,15 +169,15 @@ class ScanTest(unittest.TestCase):
         inv, by_rel = self.scan()
         self.assertNotIn(".cache/junk", by_rel)
         _, by_rel = self.scan(all=True)
-        self.assertEqual(by_rel[".cache/junk"]["category"], "cache")
+        self.assertEqual(by_rel[".cache/junk"]["location"], "cache")
         self.assertIs(by_rel[".cache/junk"]["editable"], False)
 
 
 def rec(**kw):
-    base = {"path": "/h/.config/x", "rel": ".config/x", "category": "config",
+    base = {"path": "/h/.config/x", "rel": ".config/x", "location": "config",
             "kind": "dir", "via_symlink": None, "size": 1, "mtime": None,
             "editable": True, "is_git_repo": False, "git": None,
-            "program": None, "installed": None, "flags": [],
+            "program": None, "category": None, "installed": None, "flags": [],
             "relevance": 50, "relevance_terms": []}
     base.update(kw)
     return base

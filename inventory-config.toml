@@ -30,12 +30,14 @@ starship   = { paths = ["starship.toml"], category = "Shells" }
 git        = { paths = [".gitconfig", ".gitignore_global", "git"], category = "Version control" }
 lazygit    = { paths = ["lazygit"], category = "Version control" }
 github-cli = { paths = ["gh"], pkgs = ["github-cli"], bin = "gh", category = "Version control" }
+chezmoi    = { paths = ["chezmoi"], category = "Version control" }
 # Terminal multiplexers
 tmux       = { paths = [".tmux.conf", "tmux"], category = "Terminal multiplexers" }
 # Editors
 vim        = { paths = [".vimrc", ".vim"], pkgs = ["gvim"], category = "Editors" }
 neovim     = { paths = ["nvim"], bin = "nvim", category = "Editors" }
 emacs      = { paths = [".emacs", ".emacs.d", "emacs"], category = "Editors" }
+micro      = { paths = ["micro"], category = "Editors" }
 # Terminal emulators
 kitty      = { paths = ["kitty"], category = "Terminal emulators" }
 alacritty  = { paths = ["alacritty"], category = "Terminal emulators" }
@@ -69,6 +71,7 @@ fastfetch  = { paths = ["fastfetch"], category = "System monitors" }
 ranger     = { paths = ["ranger"], category = "File managers" }
 yazi       = { paths = ["yazi"], category = "File managers" }
 lf         = { paths = ["lf"], category = "File managers" }
+nemo       = { paths = ["nemo"], category = "File managers" }
 # Secrets & security
 openssh    = { paths = [".ssh"], bin = "ssh", category = "Secrets & security" }
 gnupg      = { paths = [".gnupg"], bin = "gpg", category = "Secrets & security" }
@@ -82,6 +85,17 @@ npm        = { paths = [".npmrc"], category = "Language tooling" }
 cargo      = { paths = [".cargo"], pkgs = ["rust", "rustup"], category = "Language tooling" }
 wget       = { paths = [".wgetrc"], category = "Network tools" }
 curl       = { paths = [".curlrc"], category = "Network tools" }
+# Desktop environments
+cinnamon         = { paths = ["cinnamon"], category = "Desktop environments" }
+cinnamon-session = { paths = ["cinnamon-session"], category = "Desktop environments" }
+dconf            = { paths = ["dconf"], category = "Desktop environments" }
+# Gaming & compatibility
+steam      = { paths = [".steam"], category = "Gaming" }
+protonplus = { paths = ["ProtonPlus"], category = "Gaming" }
+# Virtualization
+winboat    = { paths = ["winboat", ".winboat"], category = "Virtualization" }
+# Package managers
+flatpak    = { paths = ["flatpak"], category = "Package managers" }
 
 # --------------------------------------------------------------------------
 # Shell startup files → category "shell".

@@ -59,8 +59,8 @@ VERSION = "0.1.0"
 
 PROGRAMS = {}          # program -> {"paths": [...], "pkgs"?, "bin"?, "category"?}
 REGISTRY_BY_PATH = {}  # rc-file / config-dir basename -> program (derived)
-PROGRAM_CATEGORY = {}  # program -> display category, for health grouping (derived)
-SHELL_FILES = set()    # home-dir rc files that get category "shell"
+PROGRAM_CATEGORY = {}  # program -> category (from TOML), stored on each entry (derived)
+SHELL_FILES = set()    # home-dir rc files that get location "shell"
 SECRET_HOME = set()    # sensitive home-dir basenames (never content-sniffed)
 SECRET_CONFIG = set()  # sensitive ~/.config basenames
 NOISE_DIRS = set()     # state/cache dirs living under ~/.config
@@ -424,7 +424,7 @@ def score(name, kind, program, installed, is_git_repo, registry_hit,
 
 def analyze(lpath, real, root_cat, home, qq):
     name = os.path.basename(lpath)
-    category = categorize(name, root_cat)
+    location = categorize(name, root_cat)
     secret = ((root_cat == "home" and name in SECRET_HOME)
               or (root_cat == "config" and name in SECRET_CONFIG))
     noise = root_cat == "config" and name in NOISE_DIRS
@@ -457,7 +457,7 @@ def analyze(lpath, real, root_cat, home, qq):
         json_heavy = cls == "json"
         content_ok = cls != "binary" and cls != "generated"
 
-    if category in ("cache", "state") or noise:
+    if location in ("cache", "state") or noise:
         editable = False
     elif secret or git is not None or registry_hit:
         editable = True  # content sniffing is skipped for secrets
@@ -469,7 +469,7 @@ def analyze(lpath, real, root_cat, home, qq):
     return {
         "path": real,
         "rel": rel_home(real, home),
-        "category": category,
+        "location": location,
         "kind": kind,
         "via_symlink": [lpath] if lpath != real else None,
         "size": size,
@@ -478,7 +478,7 @@ def analyze(lpath, real, root_cat, home, qq):
         "is_git_repo": git is not None,
         "git": git,
         "program": program,
-        "program_category": PROGRAM_CATEGORY.get(program),
+        "category": PROGRAM_CATEGORY.get(program),
         "installed": installed,
         "flags": flags,
         "relevance": relevance,
@@ -490,10 +490,10 @@ def dangling_entry(lpath, root_cat, home):
     return {
         "path": lpath,
         "rel": rel_home(lpath, home),
-        "category": categorize(os.path.basename(lpath), root_cat),
+        "location": categorize(os.path.basename(lpath), root_cat),
         "kind": None, "via_symlink": None, "size": None, "mtime": None,
         "editable": None, "is_git_repo": False, "git": None,
-        "program": None, "program_category": None, "installed": None,
+        "program": None, "category": None, "installed": None,
         "flags": ["dangling"], "relevance": 0, "relevance_terms": [],
     }
 
@@ -519,7 +519,7 @@ def build_inventory(args, home):
                 continue
             if real in entries:
                 # Roots are scanned in priority order, so the existing entry
-                # already carries the winning category; just note the link.
+                # already carries the winning location; just note the link.
                 rec = entries[real]
                 if lpath != real:
                     rec["via_symlink"] = (rec["via_symlink"] or []) + [lpath]
@@ -590,7 +590,7 @@ def render_listing(inv, args):
     shown = [e for e in entries if is_visible(e, args)]
     lines = []
     for cat in CAT_ORDER:
-        group = sorted((e for e in shown if e["category"] == cat),
+        group = sorted((e for e in shown if e["location"] == cat),
                        key=lambda e: (-(e["relevance"] or 0), e["rel"]))
         if not group:
             continue
@@ -610,7 +610,7 @@ def render_listing(inv, args):
             lines.append("  " + "  ".join(parts))
         lines.append("")
 
-    cats = Counter(e["category"] for e in shown)
+    cats = Counter(e["location"] for e in shown)
     orphans = sum(1 for e in entries if e["installed"] is False)
     secrets = sum(1 for e in entries if "secret" in e["flags"])
     repos = len({e["git"]["root"] for e in entries if e["git"]})
@@ -642,7 +642,7 @@ def section_findings(recs):
     present = [r for r in recs if "dangling" not in r["flags"]]
     # Location checks apply to config proper, not a program's data/state dirs
     # that happen to attribute to it.
-    conf = [r for r in present if r["category"] in ("config", "shell", "home", "unknown")]
+    conf = [r for r in present if r["location"] in ("config", "shell", "home", "unknown")]
 
     if prog:
         if any(r["installed"] for r in recs):
@@ -731,7 +731,7 @@ def render_health(inv, source):
     programs = 0
     for name, recs in sections.items():
         findings = section_findings(recs)
-        cat = (name != "unattributed" and recs[0].get("program_category")) or UNCATEGORIZED
+        cat = (name != "unattributed" and recs[0].get("category")) or UNCATEGORIZED
         groups.setdefault(cat, []).append((name, findings))
         for sev, _, _ in findings:
             totals[sev] += 1
