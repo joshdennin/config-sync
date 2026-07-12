@@ -4,6 +4,8 @@
 scan   — discover config entries under home, classify them, print a report
 health — read a saved `scan --json` inventory and print a Markdown
          checkhealth-style report (inspired by Neovim's :checkhealth)
+tidy   — report (and with --move, perform) safe XDG relocations of a
+         conservative "Tier 1" set of HOME config files into ~/.config
 
 scan flags:
   --json               emit the complete structured inventory to stdout
@@ -19,6 +21,9 @@ scan flags:
 health arguments:
   inventory            path to an inventory file written by `scan --json`
 
+tidy flags:
+  --move               move the safe candidates into ~/.config (default: report)
+
 The classification tables (the known-dotfiles registry, the shell/secret/noise
 lists, and the machine-generated denylists) live in a TOML config, not in the
 code. `scan` loads inventory-config.toml from next to this script by default,
@@ -33,8 +38,10 @@ Example — save a structured inventory, then render a health report to Markdown
   inventory.py scan --json > inventory.json
   inventory.py health inventory.json > health.md
 
-The script never writes, moves, or deletes anything; its only side effects are
-filesystem reads and read-only `pacman` / `git` queries.
+`scan` and `health` never write, move, or delete anything; their only side
+effects are filesystem reads and read-only `pacman` / `git` queries. `tidy` is
+read-only unless given --move, and even then only relocates a Tier 1 candidate
+when its target does not already exist — it never overwrites or deletes.
 """
 
 import argparse
@@ -92,6 +99,19 @@ _TEXT_BYTES = bytes(range(0x20, 0x7F)) + b"\t\n\r\x0b\x0c" + bytes(range(0x80, 0
 def die(msg):
     print(f"inventory.py: error: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def require_home():
+    """$HOME or a hard error — every command needs it."""
+    home = os.environ.get("HOME")
+    if not home:
+        die("$HOME is not set")
+    return home
+
+
+def config_home(home):
+    """The ~/.config root, honoring $XDG_CONFIG_HOME."""
+    return os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
 
 
 # --------------------------------------------------------------------------
@@ -379,7 +399,7 @@ def git_record(anchor):
 def resolve_roots(args, home):
     env = os.environ
     roots = [
-        (env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "config"),
+        (config_home(home), "config"),
         (home, "home"),
         (env.get("XDG_DATA_HOME") or os.path.join(home, ".local/share"), "data"),
     ]
@@ -791,12 +811,103 @@ def render_health(inv, source, cfg=Config()):
 
 
 # --------------------------------------------------------------------------
+# Tidy — report (and optionally perform) safe XDG relocations.
+#
+# Checks $HOME for a conservative "Tier 1" set of config files: those whose
+# program reads the ~/.config location *automatically* — no environment
+# variable, wrapper, or sourced stub required — so the file can simply be moved
+# there without breaking the application. Programs that only relocate via a
+# pointer ($ZDOTDIR, $GNUPGHOME, a bash `source` shim, …) are left out: those
+# are not transparent moves. A candidate is only moved when its target does not
+# already exist; a symlinked source is reported but never moved. Never
+# overwrites or deletes.
+
+# program -> [(HOME-relative source, ~/.config-relative target)].
+# INVARIANT: only programs that read the target automatically. Each pair is a
+# promise that moving source -> target is transparent to the program; keep it
+# that way when adding rows (verify against the program's own docs, not a guess).
+TIER1 = {
+    "git": [
+        (".gitconfig", "git/config"),          # $XDG_CONFIG_HOME/git/config
+        (".gitignore_global", "git/ignore"),   # git's default XDG excludes file
+    ],
+    "tmux": [
+        (".tmux.conf", "tmux/tmux.conf"),      # tmux >= 3.1 reads the XDG path
+    ],
+}
+
+# Status -> (label, note). "movable" is the only actionable-by-move state.
+TIDY_STATUS = {
+    "movable": ("MOVABLE", ""),
+    "merge":   ("MERGE  ", "target exists — merge by hand"),
+    "symlink": ("SYMLINK", "source is a symlink — left for your dotfiles tool"),
+    "done":    ("DONE   ", "already at the target"),
+}
+
+
+def tidy_classify(src, dst):
+    """Movement state for a HOME source and its ~/.config target."""
+    src_here = os.path.lexists(src)  # lexists so a dangling/symlink source counts
+    dst_here = os.path.lexists(dst)
+    if not src_here:
+        return "done" if dst_here else "absent"
+    if os.path.islink(src):
+        return "symlink"
+    return "merge" if dst_here else "movable"
+
+
+def tidy_survey(home, conf_home):
+    rows = []  # (program, src_rel, dst_rel, src_abs, dst_abs, status)
+    for prog, pairs in sorted(TIER1.items()):
+        for src_rel, dst_rel in pairs:
+            src = os.path.join(home, src_rel)
+            dst = os.path.join(conf_home, dst_rel)
+            status = tidy_classify(src, dst)
+            if status != "absent":  # nothing to say about files you don't have
+                rows.append((prog, src_rel, dst_rel, src, dst, status))
+    return rows
+
+
+def tidy_report(rows, moved=False):
+    verb = "Moved" if moved else "Tier 1 config relocations"
+    print(f"tidy — {verb} (HOME → ~/.config)\n")
+    if not rows:
+        print("  nothing to report — no known Tier 1 config files in $HOME.")
+        return
+    width = max(len(f"~/{r[1]}") for r in rows)
+    for prog, src_rel, dst_rel, _, _, status in rows:
+        label, note = TIDY_STATUS[status]
+        arrow = f"~/{src_rel:<{width}} → ~/.config/{dst_rel}"
+        print(f"  {label}  {arrow}" + (f"   ({note})" if note else ""))
+    movable = sum(1 for r in rows if r[5] == "movable")
+    if not moved:
+        print()
+        if movable:
+            print(f"{movable} movable · run with --move to relocate them.")
+        else:
+            print("Nothing to move.")
+
+
+def tidy_move(rows):
+    done = []
+    for prog, src_rel, dst_rel, src, dst, status in rows:
+        if status != "movable":
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(src, dst)
+        done.append((prog, src_rel, dst_rel, src, dst, "done"))
+    if done:
+        tidy_report(done, moved=True)
+    else:
+        print("tidy — nothing to move.")
+    return done
+
+
+# --------------------------------------------------------------------------
 # Entry points
 
 def cmd_scan(args):
-    home = os.environ.get("HOME")
-    if not home:
-        die("$HOME is not set")
+    home = require_home()
     if shutil.which("pacman") is None:
         die("pacman not found on PATH — this tool needs Arch's pacman for "
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
@@ -820,6 +931,16 @@ def cmd_health(args):
         die(f"{args.inventory!r} is not a valid inventory "
             "(expected the {meta, entries} object written by `scan --json`)")
     sys.stdout.write(render_health(inv, args.inventory))
+    return 0
+
+
+def cmd_tidy(args):
+    home = require_home()
+    rows = tidy_survey(home, config_home(home))
+    if args.move:
+        tidy_move(rows)
+    else:
+        tidy_report(rows)
     return 0
 
 
@@ -852,6 +973,13 @@ def parse_args(argv):
                             "`scan --json` inventory")
     h.add_argument("inventory", help="inventory file written by `scan --json`")
     h.set_defaults(func=cmd_health)
+
+    t = sub.add_parser("tidy",
+                       help="report (and optionally perform) safe XDG "
+                            "relocations of Tier 1 config files")
+    t.add_argument("--move", action="store_true",
+                   help="move the safe candidates into ~/.config (default: report only)")
+    t.set_defaults(func=cmd_tidy)
     return p.parse_args(argv)
 
 

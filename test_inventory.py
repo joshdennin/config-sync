@@ -5,6 +5,8 @@ tools are needed; the filesystem fixture is a synthetic $HOME in a temp dir.
 """
 
 import argparse
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -233,6 +235,60 @@ class HealthTest(unittest.TestCase):
         self.assertIn("## polybar", out)                         # section header
         self.assertIn("⚠️", out)                                 # orphan is a WARN
         self.assertTrue(out.endswith("\n"))
+
+
+class TidyTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        patches = [mock.patch.dict(os.environ, {"HOME": self.home}, clear=False)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        os.environ.pop("XDG_CONFIG_HOME", None)  # so config_home is ~/.config
+
+        def touch(rel, data=b"x"):
+            path = os.path.join(self.home, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+
+        touch(".gitconfig")                          # movable: no target yet
+        touch(".gitignore_global")                   # merge: source + target both present
+        touch(".config/git/ignore")
+        os.symlink(os.path.join(self.home, "elsewhere"),
+                   os.path.join(self.home, ".tmux.conf"))  # symlink source
+
+    def survey(self):
+        rows = inventory.tidy_survey(self.home, inventory.config_home(self.home))
+        return {src_rel: status for _, src_rel, _, _, _, status in rows}
+
+    def test_survey_classifies_statuses(self):
+        s = self.survey()
+        self.assertEqual(s[".gitconfig"], "movable")
+        self.assertEqual(s[".gitignore_global"], "merge")
+        self.assertEqual(s[".tmux.conf"], "symlink")
+
+    def test_absent_source_yields_no_row(self):
+        # .gitconfig is present; a program file that is neither present nor
+        # already at its target simply produces no row. Remove the movable one
+        # and confirm it drops out of the survey.
+        os.remove(os.path.join(self.home, ".gitconfig"))
+        self.assertNotIn(".gitconfig", self.survey())
+
+    def test_move_relocates_only_movable(self):
+        rows = inventory.tidy_survey(self.home, inventory.config_home(self.home))
+        with contextlib.redirect_stdout(io.StringIO()):
+            inventory.tidy_move(rows)
+        # movable relocated: source gone, target now present
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".gitconfig")))
+        self.assertTrue(os.path.exists(os.path.join(self.home, ".config/git/config")))
+        # merge and symlink left untouched
+        self.assertTrue(os.path.exists(os.path.join(self.home, ".gitignore_global")))
+        self.assertTrue(os.path.islink(os.path.join(self.home, ".tmux.conf")))
+        # a re-survey now reports the relocated file as done
+        self.assertEqual(self.survey().get(".gitconfig"), "done")
 
 
 if __name__ == "__main__":
