@@ -1,0 +1,180 @@
+config inventory — health check       2026-07-11 12:41   host: Strobe-A
+source: inventory.json  (scanned 2026-07-11T12:40:05-04:00)
+
+protonplus
+  OK     program installed (protonplus)
+  OK     config at ~/.config/ProtonPlus
+  INFO   not under version control — candidate for a dotfiles repo
+
+btop
+  OK     program installed (btop)
+  OK     config at ~/.config/btop
+  INFO   not under version control — candidate for a dotfiles repo
+
+cinnamon
+  OK     program installed (cinnamon)
+  OK     config at ~/.config/cinnamon
+  INFO   not under version control — candidate for a dotfiles repo
+
+cinnamon-session
+  OK     program installed (cinnamon-session)
+  OK     config at ~/.config/cinnamon-session
+  INFO   not under version control — candidate for a dotfiles repo
+
+dconf
+  OK     program installed (dconf)
+  OK     config at ~/.config/dconf
+
+fish
+  OK     program installed (fish)
+  OK     config at ~/.config/fish
+  INFO   not under version control — candidate for a dotfiles repo
+
+gh
+  OK     program installed (github-cli)
+  OK     config at ~/.config/gh
+  INFO   not under version control — candidate for a dotfiles repo
+  WARN   contains secrets — do not sync to a public repo
+
+ghostty
+  OK     program installed (ghostty)
+  OK     config at ~/.config/ghostty
+  OK     git: ghostty @ main
+
+git
+  OK     program installed (git)
+  OK     config at ~/.config/git
+  OK     config at ~/.gitconfig
+  WARN   config present at 2 known paths at once
+  INFO   not under version control — candidate for a dotfiles repo
+
+gtk-launch
+  OK     program installed (gtk)
+  OK     config at ~/.config/gtk-3.0
+  OK     config at ~/.gtkrc-2.0
+  WARN   config present at 2 known paths at once
+  INFO   not under version control — candidate for a dotfiles repo
+
+micro
+  OK     program installed (micro)
+  OK     config at ~/.config/micro
+  INFO   not under version control — candidate for a dotfiles repo
+
+nemo
+  OK     program installed (nemo)
+  OK     config at ~/.config/nemo
+  INFO   not under version control — candidate for a dotfiles repo
+
+nvim
+  OK     program installed (neovim)
+  OK     config at ~/.config/nvim
+  OK     git: nvim @ main
+
+tmux
+  OK     program installed (tmux)
+  OK     config at ~/.config/tmux
+  OK     git: tmux @ main
+  WARN   git: 1 uncommitted change in the working tree
+         → git -C ~/.config/tmux status
+
+winboat
+  OK     program installed (winboat)
+  OK     config at ~/.config/winboat
+  OK     config at ~/.winboat
+  WARN   config present at 2 known paths at once
+  INFO   not under version control — candidate for a dotfiles repo
+
+zsh
+  OK     program installed (zsh)
+  OK     config at ~/.config/zsh
+  OK     config at ~/Projects/zsh/zsh-config/zsh/zshrc  (via ~/.zshrc → symlink)
+  WARN   config present at 2 known paths at once
+  OK     git: zsh-config @ main
+
+bash
+  OK     program installed (bash)
+  OK     config at ~/.bash_logout
+  OK     config at ~/.bash_profile
+  OK     config at ~/.bashrc
+  WARN   config present at 3 known paths at once
+  INFO   not under version control — candidate for a dotfiles repo
+
+gpg
+  OK     program installed (gnupg)
+  OK     config at ~/.gnupg
+  INFO   not under version control — candidate for a dotfiles repo
+  WARN   contains secrets — do not sync to a public repo
+
+pass
+  OK     program installed (pass)
+  OK     config at ~/.password-store
+  INFO   not under version control — candidate for a dotfiles repo
+  WARN   contains secrets — do not sync to a public repo
+
+steam
+  OK     program installed (steam)
+  OK     config at ~/.steam
+  INFO   not under version control — candidate for a dotfiles repo
+
+flatpak
+  OK     program installed (flatpak)
+
+unattributed
+  OK     config at ~/.config/Code - OSS
+  OK     config at ~/.config/Epic
+  OK     config at ~/.config/QtProject.conf
+  OK     config at ~/.config/autostart
+  OK     config at ~/.config/cachyos
+  OK     config at ~/.config/cachyos-hello.json
+  OK     config at ~/.config/evolution
+  OK     config at ~/.config/ibus
+  OK     config at ~/.config/menus
+  OK     config at ~/.config/mimeapps.list
+  OK     config at ~/.config/mozilla
+  OK     config at ~/.config/pulse
+  OK     config at ~/.config/unity3d
+  OK     config at ~/.config/user-dirs.dirs
+  OK     config at ~/.config/user-dirs.locale
+  OK     config at ~/.config/x-cinnamon-xdg-terminals.list
+  OK     config at ~/.config/xdg-terminals.list
+  OK     config at ~/.Xauthority
+  OK     config at ~/.claude
+  OK     config at ~/.claude.json
+  OK     config at ~/.copilot
+  OK     config at ~/.dmrc
+  OK     config at ~/.factorio
+  OK     config at ~/.gemini
+  OK     config at ~/.icons
+  OK     config at ~/.nv
+  OK     config at ~/.p10k.zsh
+  OK     config at ~/.pki
+  OK     config at ~/.pulse-cookie
+  OK     config at ~/.steam/steam.pid  (via ~/.steampid → symlink)
+  OK     config at ~/.themes
+  OK     config at ~/.var
+  OK     config at ~/.vscode-oss
+  OK     config at ~/.vscode-oss-shared
+  OK     config at ~/.wget-hsts
+  OK     config at ~/.xsession-errors
+  OK     config at ~/.xsession-errors.old
+  OK     config at ~/.zcompdump-Strobe-A-5.9.1
+  OK     config at ~/.zcompdump-Strobe-A-5.9.1.zwc
+  OK     config at ~/.zsh_history
+  OK     config at ~/.zshrc.bak.20260704-173436
+  ERROR  dangling symlink: ~/.steampath (target missing)
+         → broken link; verify and clean up ~/.steampath
+  INFO   not under version control — candidate for a dotfiles repo
+  WARN   contains secrets — do not sync to a public repo
+
+Summary: 21 programs · 92 OK · 10 WARN · 1 ERROR · 16 INFO
+Needs attention:
+  • gh            — contains secrets — do not sync to a public repo
+  • git           — config present at 2 known paths at once
+  • gtk-launch    — config present at 2 known paths at once
+  • tmux          — 1 uncommitted change in the working tree
+  • winboat       — config present at 2 known paths at once
+  • zsh           — config present at 2 known paths at once
+  • bash          — config present at 3 known paths at once
+  • gpg           — contains secrets — do not sync to a public repo
+  • pass          — contains secrets — do not sync to a public repo
+  • unattributed  — dangling symlink: ~/.steampath (target missing); contains secrets — do not sync to a public repo
