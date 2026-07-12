@@ -167,16 +167,33 @@ With writers sharing the field contract, the loose dict is no longer safe enough
 - Guardrail held: a test confirms the inventory round-trips through `report_json`
   unchanged — it stays plain JSON-serializable data.
 
-## Step 6 — Feature 1: `adopt` (build dotfiles repo)  — COPY, preserving originals
+## Step 6 — Feature 1: `adopt` (build dotfiles repo)  — plan / apply, COPY ✅ DONE
 
-- New `adopt` action (→ `sync.py`) + subcommand. Consumes the inventory, filters by
-  `is_adoptable`, maps home→repo, **copies** the tree into `~/.config/config-sync/<cmd>/…`
-  via `fsops` (originals untouched), writes the manifest, then writing-git
-  `init`/`add`/`commit`.
-- Dry-run by default (report what would be adopted); `--apply` / `--commit` to act.
+11 new tests; suite at 48, all green; end-to-end plan→apply verified on a temp home.
+
+Two-phase, `terraform`-style: `adopt` writes an **editable plan file** (copies
+nothing); `adopt --apply` consumes the edited plan and builds the repo. The plan
+file *is* the review-and-choose surface, so nothing is ever silently dropped.
+
+- **Three breadth tiers** seed the plan, all on top of the always-on `is_adoptable`
+  safety gate (implemented as a relevance floor, tunable):
+  - `curated` (≈ relevance ≥ 50) — strong-signal configs only. **Default.**
+  - `extended` (≈ ≥ 15) — plus weaker-but-real (text-only, known rc, known-program orphans).
+  - `everything` (≥ 0) — all adoptable.
+  Also excludes entries already under version control (`is_git_repo`) as adopt
+  policy — they are managed elsewhere.
+- **`--include` / `--exclude`** (program or category names) pre-narrow which
+  candidates land in the generated file; the file's per-entry `adopt = true/false`
+  is the final say.
+- **Plan file** (`./config-sync-adopt.toml` by default, `--plan PATH`): TOML with a
+  header comment, `version`/`tier`, and one `[[entries]]` block per candidate
+  (`program`, `path`, `kind`, `category`, `relevance`, `adopt`). Distinct from the
+  manifest: plan = pre-adoption intent (transient); manifest = post-adoption state.
+- **`--apply`**: reads the plan, **copies** each `adopt=true` entry into
+  `~/.config/config-sync/<cmd>/…` via `fsops` (originals untouched), writes/merges
+  the manifest, then best-effort writing-git `init`/`add`/`commit`. Re-runnable:
+  entries already in the manifest or present in the repo are skipped.
 - Reversal is trivial (originals preserved): removing the repo undoes adopt.
-- Multi-location programs (e.g. tmux at `~/.tmux.conf` and `~/.config/tmux/`) are
-  disambiguated by per-entry manifest rows.
 
 ## Step 7 — Feature 2: `link` (deploy repo → filesystem)  — BACK UP then symlink
 

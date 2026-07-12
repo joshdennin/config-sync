@@ -302,6 +302,125 @@ class AdoptableTest(unittest.TestCase):
         self.assertTrue(self.adoptable(path="/h/.config/config-sync-notes"))
 
 
+class AdoptCandidatesTest(unittest.TestCase):
+    CONF = "/h/.config"
+
+    def setUp(self):
+        self.inv = {"meta": {}, "entries": [
+            rec(program="neovim", category="editor", relevance=95),
+            rec(program="tmux", category="terminal", relevance=80),
+            rec(program="polybar", category="desktop", relevance=20, installed=False),
+            rec(program="foo", category="misc", relevance=5),
+            rec(program="dots", relevance=90, is_git_repo=True),   # already versioned
+            rec(program="ssh", relevance=60, flags=["secret"]),    # unsafe
+        ]}
+
+    def progs(self, tier, include=(), exclude=()):
+        cands = inventory.adopt_candidates(self.inv, tier, list(include),
+                                           list(exclude), self.CONF)
+        return {c["program"] for c in cands}
+
+    def test_curated_is_strong_signal_only(self):
+        self.assertEqual(self.progs("curated"), {"neovim", "tmux"})
+
+    def test_extended_adds_weaker_signals(self):
+        self.assertEqual(self.progs("extended"), {"neovim", "tmux", "polybar"})
+
+    def test_everything_includes_low_signal(self):
+        self.assertEqual(self.progs("everything"),
+                         {"neovim", "tmux", "polybar", "foo"})
+
+    def test_git_repos_and_secrets_never_included(self):
+        broadest = self.progs("everything")
+        self.assertNotIn("dots", broadest)  # already under version control
+        self.assertNotIn("ssh", broadest)   # secret (safety gate)
+
+    def test_include_and_exclude_match_program_or_category(self):
+        self.assertEqual(self.progs("extended", include=["editor"]), {"neovim"})
+        self.assertEqual(self.progs("curated", exclude=["tmux"]), {"neovim"})
+
+
+class AdoptPlanIOTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "plan.toml")
+
+    def test_write_then_load_round_trip(self):
+        rows = [inventory.adopt_plan_row(rec(program="tmux", rel=".tmux.conf",
+                                             kind="file", relevance=80))]
+        inventory.write_adopt_plan(self.path, rows, "curated")
+        data = inventory.load_adopt_plan(self.path)
+        self.assertEqual(data["tier"], "curated")
+        self.assertEqual(data["entries"][0]["program"], "tmux")
+        self.assertEqual(data["entries"][0]["path"], "~/.tmux.conf")
+        self.assertTrue(data["entries"][0]["adopt"])
+
+    def test_header_comment_guides_editing(self):
+        inventory.write_adopt_plan(self.path, [], "everything")
+        with open(self.path) as f:
+            text = f.read()
+        self.assertIn("# config-sync adopt plan", text)
+        self.assertIn("adopt = false", text)  # the edit instruction
+
+    def test_missing_plan_is_hard_error(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            inventory.load_adopt_plan(os.path.join(self.tmp.name, "nope.toml"))
+
+
+class AdoptApplyTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.realpath(self.tmp.name)
+        self.conf = os.path.join(self.home, ".config")
+        os.makedirs(os.path.join(self.home, ".config/ghostty"))
+        with open(os.path.join(self.home, ".config/ghostty/config"), "w") as f:
+            f.write("theme=dark\n")
+        with open(os.path.join(self.home, ".tmux.conf"), "w") as f:
+            f.write("set -g mouse on\n")
+        self.cfg = inventory.load_config(inventory.default_config_path())
+        p = mock.patch.object(inventory, "git_init_commit", lambda repo, msg: True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def plan(self, *rows):
+        return {"version": 1, "tier": "everything", "entries": list(rows)}
+
+    def row(self, path, kind, program, adopt=True):
+        return {"program": program, "path": path, "kind": kind,
+                "category": "", "relevance": 50, "adopt": adopt}
+
+    def repo(self, *parts):
+        return os.path.join(self.conf, "config-sync", *parts)
+
+    def test_apply_copies_true_entries_preserving_structure(self):
+        result = inventory.adopt_apply(self.plan(
+            self.row("~/.config/ghostty", "dir", "ghostty"),
+            self.row("~/.tmux.conf", "file", "tmux"),
+        ), self.home, self.conf, self.cfg)
+        self.assertTrue(os.path.isfile(self.repo("ghostty/config")))  # dir tree preserved
+        self.assertTrue(os.path.isfile(self.repo("tmux/.tmux.conf")))
+        # originals preserved (copy, not move) — reversible by construction
+        self.assertTrue(os.path.isfile(os.path.join(self.home, ".config/ghostty/config")))
+        self.assertEqual(set(result["copied"]), {"~/.config/ghostty", "~/.tmux.conf"})
+        self.assertEqual(len(inventory.load_manifest(self.conf)["entries"]), 2)
+
+    def test_adopt_false_entries_are_skipped(self):
+        result = inventory.adopt_apply(
+            self.plan(self.row("~/.tmux.conf", "file", "tmux", adopt=False)),
+            self.home, self.conf, self.cfg)
+        self.assertEqual(result["copied"], [])
+        self.assertFalse(os.path.lexists(self.repo("tmux")))  # repo untouched
+
+    def test_reapply_is_idempotent(self):
+        plan = self.plan(self.row("~/.tmux.conf", "file", "tmux"))
+        inventory.adopt_apply(plan, self.home, self.conf, self.cfg)
+        again = inventory.adopt_apply(plan, self.home, self.conf, self.cfg)
+        self.assertEqual(again["copied"], [])
+        self.assertEqual(again["skipped"], ["~/.tmux.conf"])  # already adopted
+
+
 class FsopsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

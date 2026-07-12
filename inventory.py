@@ -6,6 +6,9 @@ health — read a saved `scan --json` inventory and print a Markdown
          checkhealth-style report (inspired by Neovim's :checkhealth)
 tidy   — report (and with --move, perform) safe XDG relocations of a
          conservative "Tier 1" set of HOME config files into ~/.config
+adopt  — write an editable plan of discovered configs (curated/extended/
+         everything tier); with --apply, copy the plan's entries into the
+         managed repo at ~/.config/config-sync/, write the manifest, git commit
 
 scan flags:
   --json               emit the complete structured inventory to stdout
@@ -24,6 +27,14 @@ health arguments:
 tidy flags:
   --move               move the safe candidates into ~/.config (default: report)
 
+adopt flags:
+  --select TIER        plan breadth: curated | extended | everything (default curated)
+  --include NAME       restrict the plan to these programs/categories (repeatable)
+  --exclude NAME       drop these programs/categories from the plan (repeatable)
+  --plan PATH          plan file to write, then read with --apply
+  --apply              build the repo from the (edited) plan
+  --config PATH        TOML classification config
+
 The classification tables (the known-dotfiles registry, the shell/secret/noise
 lists, and the machine-generated denylists) live in a TOML config, not in the
 code. `scan` loads inventory-config.toml from next to this script by default,
@@ -40,8 +51,10 @@ Example — save a structured inventory, then render a health report to Markdown
 
 `scan` and `health` never write, move, or delete anything; their only side
 effects are filesystem reads and read-only `pacman` / `git` queries. `tidy` is
-read-only unless given --move, and even then only relocates a Tier 1 candidate
-when its target does not already exist — it never overwrites or deletes.
+read-only unless given --move; `adopt` is read-only unless given --apply (it
+only writes a plan file otherwise). Every write goes through the fsops
+primitives, which refuse to overwrite or delete: `adopt` copies (originals are
+left untouched) and `tidy --move` only relocates when the target is absent.
 """
 
 import argparse
@@ -1119,6 +1132,119 @@ def tidy_move(rows):
 
 
 # --------------------------------------------------------------------------
+# Adopt — build a dotfiles repo from discovered configs, in two phases. Phase
+# one (`adopt`) writes an editable plan file and copies nothing; phase two
+# (`adopt --apply`) reads the edited plan and materializes the repo. The plan
+# is the review surface, so the tier is only a starting breadth — nothing is
+# dropped without the user seeing it.
+
+# Relevance floor per tier (on top of the always-on is_adoptable gate). Tunable.
+ADOPT_TIERS = {"curated": 50, "extended": 15, "everything": 0}
+ADOPT_PLAN_VERSION = 1
+
+
+def _adopt_match(rec, names):
+    """True if the entry's program or category is named."""
+    return rec["program"] in names or rec["category"] in names
+
+
+def adopt_candidates(inv, tier, include, exclude, conf_home):
+    """Entries eligible for the plan at `tier`, after include/exclude. Applies
+    the safety gate, the tier's relevance floor, and adopt policy (skip anything
+    already under version control — it is managed elsewhere)."""
+    floor = ADOPT_TIERS[tier]
+    out = []
+    for rec in inv["entries"]:
+        if not is_adoptable(rec, conf_home) or rec["is_git_repo"]:
+            continue
+        if (rec["relevance"] or 0) < floor:
+            continue
+        if include and not _adopt_match(rec, include):
+            continue
+        if exclude and _adopt_match(rec, exclude):
+            continue
+        out.append(rec)
+    return out
+
+
+def adopt_plan_row(rec):
+    return {"program": rec["program"] or "", "path": display_path(rec),
+            "kind": rec["kind"], "category": rec["category"] or "",
+            "relevance": rec["relevance"] or 0, "adopt": True}
+
+
+def write_adopt_plan(path, rows, tier):
+    header = (f'# config-sync adopt plan — "{tier}" tier, {datetime.now():%Y-%m-%d}\n'
+              "# Edit before applying: set adopt = false (or delete a block) to skip an entry.\n"
+              f"# Then run:  config-sync adopt --apply --plan {path}\n\n")
+    data = {"version": ADOPT_PLAN_VERSION, "tier": tier, "entries": rows}
+    with open(path, "wb") as f:
+        f.write(header.encode())
+        tomli_w.dump(data, f)
+    return path
+
+
+def load_adopt_plan(path):
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        die(f"adopt plan not found: {path}\n"
+            "  run `config-sync adopt` first to generate one")
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        die(f"cannot read adopt plan {path!r}: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        die(f"{path!r} is not a valid adopt plan (expected a {{version, entries}} object)")
+    return data
+
+
+def expand_home(path, home):
+    return os.path.join(home, path[2:]) if path.startswith("~/") else path
+
+
+def git_init_commit(repo, message):
+    """Best-effort init + add + commit for the freshly built repo. Commit can
+    fail (e.g. no git identity configured); that is reported, not fatal."""
+    for args in (["init", "-q"], ["add", "-A"]):
+        subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", repo, "commit", "-q", "-m", message],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def adopt_apply(plan, home, conf_home, cfg):
+    """Copy the plan's adopt=true entries into the repo, merge the manifest, and
+    commit. Re-runnable: entries already recorded or already present are skipped."""
+    manifest = load_manifest(conf_home)
+    known = {e["home_path"] for e in manifest["entries"]}
+    copied, skipped = [], []
+    for row in plan["entries"]:
+        if not row.get("adopt", False):
+            continue
+        home_path = expand_home(row["path"], home)
+        program = row["program"] or None
+        repo_path = repo_path_for(home_path, row["kind"], program, cfg, conf_home)
+        if home_path in known or os.path.lexists(repo_path):
+            skipped.append(row["path"])
+            continue
+        try:
+            safe_copy(home_path, repo_path)
+        except (FsError, OSError) as e:
+            skipped.append(f"{row['path']} ({e})")
+            continue
+        manifest["entries"].append(manifest_entry(program, home_path, repo_path, row["kind"]))
+        known.add(home_path)
+        copied.append(row["path"])
+    committed = False
+    if copied:
+        save_manifest(conf_home, manifest)
+        committed = git_init_commit(repo_root(conf_home),
+                                    f"adopt {len(copied)} config(s) via config-sync")
+    return {"copied": copied, "skipped": skipped, "committed": committed,
+            "repo": repo_root(conf_home)}
+
+
+# --------------------------------------------------------------------------
 # Entry points
 
 def cmd_scan(args):
@@ -1152,6 +1278,39 @@ def cmd_tidy(args):
         tidy_move(rows)
     else:
         tidy_report(rows)
+    return 0
+
+
+def cmd_adopt(args):
+    home = os.path.abspath(require_home())
+    conf = config_home(home)
+    cfg = load_config(args.config or default_config_path())
+    if args.apply:
+        result = adopt_apply(load_adopt_plan(args.plan), home, conf, cfg)
+        if result["copied"]:
+            print(f"Adopted {len(result['copied'])} config(s) into {result['repo']}:")
+            for p in result["copied"]:
+                print(f"  + {p}")
+            print("Committed." if result["committed"]
+                  else "  (git commit skipped — set git user.name/email, then commit by hand)")
+        if result["skipped"]:
+            print(f"Skipped {len(result['skipped'])} (already adopted or unavailable):")
+            for p in result["skipped"]:
+                print(f"  - {p}")
+        if not result["copied"] and not result["skipped"]:
+            print("Nothing to adopt — no entries marked adopt = true in the plan.")
+        return 0
+    # Plan phase: scan, filter to the tier, write the editable plan.
+    if shutil.which("pacman") is None:
+        die("pacman not found on PATH — this tool needs Arch's pacman for "
+            "package-ownership queries (on Arch: sudo pacman -S pacman)")
+    scan_ns = argparse.Namespace(all=False, root=[])
+    inv = build_inventory(scan_ns, home, cfg)
+    rows = [adopt_plan_row(rec) for rec in
+            adopt_candidates(inv, args.select, args.include, args.exclude, conf)]
+    write_adopt_plan(args.plan, rows, args.select)
+    print(f"Wrote {len(rows)} candidate(s) to {args.plan} ({args.select} tier).")
+    print(f"Edit the file, then run:  config-sync adopt --apply --plan {args.plan}")
     return 0
 
 
@@ -1191,6 +1350,25 @@ def parse_args(argv):
     t.add_argument("--move", action="store_true",
                    help="move the safe candidates into ~/.config (default: report only)")
     t.set_defaults(func=cmd_tidy)
+
+    a = sub.add_parser("adopt",
+                       help="generate an editable adopt plan (and with --apply, "
+                            "build the dotfiles repo from it)")
+    a.add_argument("--select", choices=list(ADOPT_TIERS), default="curated",
+                   help="breadth of the generated plan (default: curated)")
+    a.add_argument("--include", action="append", default=[], metavar="NAME",
+                   help="restrict the plan to these programs/categories (repeatable)")
+    a.add_argument("--exclude", action="append", default=[], metavar="NAME",
+                   help="drop these programs/categories from the plan (repeatable)")
+    a.add_argument("--plan", default="config-sync-adopt.toml", metavar="PATH",
+                   help="plan file to write, then read back with --apply "
+                        "(default: ./config-sync-adopt.toml)")
+    a.add_argument("--apply", action="store_true",
+                   help="copy the plan's adopt=true entries into the repo, write "
+                        "the manifest, and git commit")
+    a.add_argument("--config", metavar="PATH",
+                   help="TOML classification config (default: next to the script)")
+    a.set_defaults(func=cmd_adopt)
     return p.parse_args(argv)
 
 
