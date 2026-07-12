@@ -52,6 +52,8 @@ import shutil
 import subprocess
 import sys
 import tomllib
+
+import tomli_w
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -811,6 +813,156 @@ def render_health(inv, source, cfg=Config()):
 
 
 # --------------------------------------------------------------------------
+# fsops — safe filesystem mutations. These are the only writers in the tool
+# (besides the tidy move that now routes through safe_move). Every primitive
+# refuses to overwrite or delete: it raises FsError rather than clobber
+# existing state, and creates parent directories as needed. Dry-run and
+# reporting live in the action layer (an action surveys a plan, then calls
+# these to execute it) — the primitives themselves always act.
+
+class FsError(Exception):
+    """A safe-write primitive refused to proceed — it would have overwritten or
+    deleted existing state, or the source/target was not as expected."""
+
+
+def _ensure_parent(path):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+def safe_copy(src, dst):
+    """Copy a file or directory tree src -> dst. Refuses if dst already exists."""
+    if os.path.lexists(dst):
+        raise FsError(f"refusing to overwrite existing path: {dst}")
+    _ensure_parent(dst)
+    if os.path.isdir(src) and not os.path.islink(src):
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst, follow_symlinks=False)
+    return dst
+
+
+def safe_move(src, dst):
+    """Move src -> dst. Refuses if dst already exists."""
+    if os.path.lexists(dst):
+        raise FsError(f"refusing to overwrite existing path: {dst}")
+    _ensure_parent(dst)
+    shutil.move(src, dst)
+    return dst
+
+
+def safe_symlink(target, link_path):
+    """Create a symlink at link_path pointing to target. Refuses if link_path
+    already exists."""
+    if os.path.lexists(link_path):
+        raise FsError(f"refusing to overwrite existing path: {link_path}")
+    _ensure_parent(link_path)
+    os.symlink(target, link_path)
+    return link_path
+
+
+def remove_symlink(link_path):
+    """Remove link_path, but only if it is a symlink — never a real file or dir."""
+    if not os.path.islink(link_path):
+        raise FsError(f"refusing to remove non-symlink: {link_path}")
+    os.unlink(link_path)
+
+
+def backup(path, backups_root, home):
+    """Move path aside into backups_root, mirroring its location under home.
+    Returns the backup path. (Used by `link` before it replaces an original
+    with a symlink, so `unlink` can restore it.)"""
+    if not path.startswith(home + os.sep):
+        raise FsError(f"cannot back up a path outside home: {path}")
+    dst = os.path.join(backups_root, os.path.relpath(path, home))
+    return safe_move(path, dst)
+
+
+def restore(backup_path, orig):
+    """Move a backup back to its original location. Refuses if orig exists."""
+    return safe_move(backup_path, orig)
+
+
+# --------------------------------------------------------------------------
+# Repo mapping — where a discovered config is mirrored inside the managed repo
+# at ~/.config/config-sync/. Each program gets its own directory (named by its
+# command, the same key `health` groups by); within it the program's own
+# structure is preserved. A directory entry maps to the program directory
+# itself (its tree copied in); a file entry maps to a file beneath it.
+
+REPO_DIRNAME = "config-sync"  # the managed repo, under ~/.config
+
+
+def repo_root(conf_home):
+    return os.path.join(conf_home, REPO_DIRNAME)
+
+
+def program_dirname(program, cfg):
+    """The per-program repo directory name — the command name reads best."""
+    return cfg.programs.get(program, {}).get("bin", program)
+
+
+def repo_path_for(home_path, kind, program, cfg, conf_home):
+    """The repo destination for a discovered config. Representation-agnostic
+    (takes fields, not a record) so it survives the later Entry refactor."""
+    dirname = program_dirname(program, cfg) if program else os.path.basename(home_path)
+    prog_dir = os.path.join(repo_root(conf_home), dirname)
+    if kind == "dir":
+        return prog_dir
+    return os.path.join(prog_dir, os.path.basename(home_path))
+
+
+# --------------------------------------------------------------------------
+# Manifest — the persisted home<->repo mapping and link state for the managed
+# repo, written by `adopt` and consumed by `link`/`unlink`. Read with stdlib
+# tomllib and written with tomli_w. TOML has no null, so absent values
+# (unattributed program, not-yet-set backup path) are stored as "".
+
+MANIFEST_NAME = "manifest.toml"
+MANIFEST_VERSION = 1
+
+
+def manifest_path(conf_home):
+    return os.path.join(repo_root(conf_home), MANIFEST_NAME)
+
+
+def empty_manifest():
+    return {"version": MANIFEST_VERSION, "entries": []}
+
+
+def manifest_entry(program, home_path, repo_path, kind):
+    """One manifest row; `linked`/`backup_path` are filled in by `link`. TOML
+    cannot hold null, so an unattributed program is stored as ""."""
+    return {"program": program or "", "home_path": home_path,
+            "repo_path": repo_path, "kind": kind, "linked": False,
+            "backup_path": ""}
+
+
+def load_manifest(conf_home):
+    """Read the manifest, or an empty one if the repo has none yet."""
+    path = manifest_path(conf_home)
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return empty_manifest()
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        die(f"cannot read manifest {path!r}: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        die(f"{path!r} is not a valid manifest (expected a {{version, entries}} object)")
+    return data
+
+
+def save_manifest(conf_home, manifest):
+    path = manifest_path(conf_home)
+    _ensure_parent(path)
+    with open(path, "wb") as f:
+        tomli_w.dump(manifest, f)
+    return path
+
+
+# --------------------------------------------------------------------------
 # Tidy — report (and optionally perform) safe XDG relocations.
 #
 # Checks $HOME for a conservative "Tier 1" set of config files: those whose
@@ -893,8 +1045,7 @@ def tidy_move(rows):
     for prog, src_rel, dst_rel, src, dst, status in rows:
         if status != "movable":
             continue
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.move(src, dst)
+        safe_move(src, dst)  # status=="movable" guarantees dst is absent
         done.append((prog, src_rel, dst_rel, src, dst, "done"))
     if done:
         tidy_report(done, moved=True)

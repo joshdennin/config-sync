@@ -237,6 +237,133 @@ class HealthTest(unittest.TestCase):
         self.assertTrue(out.endswith("\n"))
 
 
+class FsopsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def p(self, *rel):
+        return os.path.join(self.root, *rel)
+
+    def write(self, rel, data=b"data"):
+        path = self.p(rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_safe_copy_file_creates_parents_and_refuses_overwrite(self):
+        src = self.write("src.txt", b"hello")
+        dst = self.p("nested/dir/out.txt")  # parents do not exist yet
+        inventory.safe_copy(src, dst)
+        self.assertTrue(os.path.isfile(dst))
+        self.assertTrue(os.path.isfile(src))  # copy, not move
+        with self.assertRaises(inventory.FsError):
+            inventory.safe_copy(src, dst)  # dst now exists
+
+    def test_safe_copy_tree_preserves_structure(self):
+        self.write("tree/a.txt", b"a")
+        self.write("tree/sub/b.txt", b"b")
+        inventory.safe_copy(self.p("tree"), self.p("copy"))
+        self.assertTrue(os.path.isfile(self.p("copy/a.txt")))
+        self.assertTrue(os.path.isfile(self.p("copy/sub/b.txt")))
+
+    def test_safe_move_refuses_overwrite(self):
+        src = self.write("m-src.txt")
+        dst = self.write("m-dst.txt")
+        with self.assertRaises(inventory.FsError):
+            inventory.safe_move(src, dst)
+        self.assertTrue(os.path.isfile(src))  # untouched on refusal
+
+    def test_symlink_create_and_remove_guards(self):
+        target = self.write("target.txt")
+        link = self.p("link")
+        inventory.safe_symlink(target, link)
+        self.assertTrue(os.path.islink(link))
+        with self.assertRaises(inventory.FsError):
+            inventory.safe_symlink(target, link)  # exists
+        inventory.remove_symlink(link)
+        self.assertFalse(os.path.lexists(link))
+        with self.assertRaises(inventory.FsError):
+            inventory.remove_symlink(target)  # never remove a real file
+        self.assertTrue(os.path.isfile(target))
+
+    def test_backup_restore_round_trip(self):
+        home = self.p("home")
+        orig = self.write("home/.config/app/config", b"cfg")
+        backups = self.p("backups")
+        bpath = inventory.backup(orig, backups, home)
+        self.assertFalse(os.path.lexists(orig))          # moved aside
+        self.assertTrue(os.path.isfile(bpath))
+        self.assertTrue(bpath.startswith(backups + os.sep))
+        inventory.restore(bpath, orig)
+        self.assertTrue(os.path.isfile(orig))            # back in place
+        self.assertFalse(os.path.lexists(bpath))
+
+    def test_backup_refuses_path_outside_home(self):
+        home = self.p("home")
+        os.makedirs(home)
+        outside = self.write("elsewhere.txt")
+        with self.assertRaises(inventory.FsError):
+            inventory.backup(outside, self.p("backups"), home)
+
+
+class RepoMappingTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = inventory.Config(programs={"neovim": {"paths": [], "bin": "nvim"}})
+        self.conf = "/h/.config"
+        self.root = "/h/.config/config-sync"
+
+    def test_dir_entry_maps_to_program_dir(self):
+        got = inventory.repo_path_for("/h/.config/nvim", "dir", "neovim",
+                                      self.cfg, self.conf)
+        self.assertEqual(got, os.path.join(self.root, "nvim"))  # bin name, tree copied in
+
+    def test_file_entry_maps_under_program_dir(self):
+        got = inventory.repo_path_for("/h/.tmux.conf", "file", "tmux",
+                                      self.cfg, self.conf)
+        self.assertEqual(got, os.path.join(self.root, "tmux", ".tmux.conf"))
+
+    def test_unattributed_falls_back_to_basename(self):
+        got = inventory.repo_path_for("/h/.config/foo", "dir", None,
+                                      self.cfg, self.conf)
+        self.assertEqual(got, os.path.join(self.root, "foo"))
+
+
+class ManifestTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conf = os.path.realpath(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_missing_manifest_reads_as_empty(self):
+        m = inventory.load_manifest(self.conf)
+        self.assertEqual(m, {"version": inventory.MANIFEST_VERSION, "entries": []})
+
+    def test_save_then_load_round_trip(self):
+        m = inventory.empty_manifest()
+        m["entries"].append(inventory.manifest_entry(
+            "neovim", "/h/.config/nvim",
+            os.path.join(inventory.repo_root(self.conf), "nvim"), "dir"))
+        path = inventory.save_manifest(self.conf, m)
+        self.assertTrue(path.endswith("config-sync/manifest.toml"))
+        self.assertEqual(inventory.load_manifest(self.conf), m)
+
+    def test_manifest_entry_coerces_missing_program_to_empty(self):
+        e = inventory.manifest_entry(None, "/h/.config/foo", "/r/foo", "dir")
+        self.assertEqual(e["program"], "")     # TOML has no null
+        self.assertEqual(e["backup_path"], "")
+
+    def test_invalid_manifest_is_hard_error(self):
+        path = inventory.manifest_path(self.conf)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write('entries = "nope"\n')  # valid TOML, wrong shape (not a list)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            inventory.load_manifest(self.conf)
+
+
 class TidyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

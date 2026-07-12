@@ -46,6 +46,10 @@ Program-grouping discards the original home location, so `link` cannot infer tha
 `adopt` writes it; `link`/`unlink` consume and update it; `scan` can cross-check it.
 It is also what makes reversal robust rather than convention-guessing.
 
+The manifest is **TOML**, matching the config style: read with stdlib `tomllib`,
+written with the small `tomli_w` dependency. TOML has no null, so absent values
+(unattributed program, not-yet-set backup path) are stored as `""`.
+
 ### Consequence: the tool must not adopt its own repo
 
 `~/.config/config-sync/` lives under a scan root. The adoptability gate must
@@ -107,22 +111,27 @@ First *action*, and a forcing function for the shared mutation substrate.
 - Add a `TidyTest` (temp-HOME fixture: movable / merge / symlink / done).
 - `tidy` (XDG hygiene) stays orthogonal to the repo workflow and coexists with it.
 
-## Step 3 — Shared mutation substrate (`fsops` + mapping/manifest helpers)
+## Step 3 — Shared mutation substrate (`fsops` + mapping/manifest helpers) ✅ DONE
 
-Build the foundation before the features that need it; `tidy` is the first
-consumer. All of this is destined for `fsops.py` and `sync.py`, but is written as
-sections of the single file until the split in step 9.
+Foundation built ahead of the features that need it, written as sections of the
+single file (destined for `fsops.py` and `sync.py` at the step-9 split). 12 new
+tests; suite at 26, all green.
 
-- **`fsops` primitives** — safe-write: dry-run by default, never overwrite, never
-  delete, explicit collision policy, plus **backup** and **restore** (needed for
-  reversible `link`). The one tested module every action calls; kept separate from
-  domain logic.
-- **mapping helper** (→ `sync.py`) — home ↔ repo translation. Repo target =
-  `config-sync/<cmd>/…` with the source subtree mirrored underneath. `adopt` walks
-  home→repo, `link` walks repo→home, `tidy` is the degenerate HOME→~/.config case.
-- **manifest helper** (→ `sync.py`) — read/write `manifest.toml`; the persisted
-  home↔repo mapping and link state.
-- Retarget `tidy`'s move onto `fsops`, proving the substrate on the simplest action.
+- **`fsops` primitives** — `safe_copy`, `safe_move`, `safe_symlink`,
+  `remove_symlink`, `backup`, `restore`, all guarded by an `FsError`: never
+  overwrite, never delete (`remove_symlink` refuses a non-symlink; `backup`
+  refuses a path outside home), parents created as needed. Dry-run/reporting was
+  deliberately left to the action layer (survey a plan, then call these to
+  execute) so the primitives stay small and always-act.
+- **mapping helper** — `repo_root`, `program_dirname`, `repo_path_for`. Repo target
+  = `config-sync/<cmd>/…`; a directory entry maps to the program dir itself (tree
+  copied in, structure preserved), a file entry to a file beneath it. Takes fields
+  rather than a record, so it survives the step-4 Entry refactor.
+- **manifest helper** — `load_manifest` (missing → empty), `save_manifest`,
+  `empty_manifest`, `manifest_entry`, `manifest_path`; **TOML** via stdlib
+  `tomllib` (read) + `tomli_w` (write), with `""` for absent values.
+- Retargeted `tidy_move` onto `safe_move`, proving the substrate on the simplest
+  action (behavior-preserving; a `movable` status guarantees no collision).
 
 ## Step 4 — Typed `Entry` model + adoptability gate (→ `inventory.py`)
 
@@ -181,8 +190,8 @@ Mechanical, done last behind green tests at every prior step.
   in `inventory.py`.
 - Split `test_inventory.py` to mirror the layout (`test_inventory`, `test_report`,
   `test_fsops`, `test_sync`); update import paths.
-- Add `pyproject.toml` with the `config-sync = configsync.cli:main` console script,
-  preserving the zero-runtime-dependency stance.
+- Add `pyproject.toml` with the `config-sync = configsync.cli:main` console script
+  and its runtime dependencies (currently just `tomli_w`; keep the set minimal).
 
 ---
 
@@ -197,14 +206,21 @@ Mechanical, done last behind green tests at every prior step.
 - 9 touches every test import, so it lands last.
 - Each step is behavior-preserving or additive and ships green.
 
-## Remaining sub-decisions (can be settled at the relevant step)
+## Sub-decisions
 
-- **Manifest format** — confirm `manifest.toml` (matches the config style) and its
-  exact schema (`program`, `home_path`, `repo_path`, `kind`, `linked`, `backup_path`).
-- **Backup location** — a `~/.config/config-sync/.backups/` tree mirroring home
-  paths, vs. in-place `name.config-sync-bak`. Former keeps home clean and is easier
-  to reason about for `unlink`.
-- **Program directory name** — reuse `health`'s section key (`bin` or program name)
-  for the per-program repo directory; confirm collisions are impossible.
-- **adopt selection controls** — flags to include/exclude specific programs or
-  categories, and whether relevance floor applies to adoption as it does to display.
+Settled while building step 3:
+- **Manifest format** — **TOML** (`manifest.toml`), schema `program`, `home_path`,
+  `repo_path`, `kind`, `linked`, `backup_path`; read via stdlib `tomllib`, written
+  via the small `tomli_w` dependency; absent values stored as `""` (TOML has no null).
+- **Program directory name** — the program's command name (`bin` from the config,
+  else the program key), via `program_dirname`; falls back to the home basename for
+  unattributed entries.
+- **Backup mechanism** — `fsops.backup(path, backups_root, home)` mirrors the home
+  path under a backups root; `unlink` reverses via `restore`.
+
+Still open (settle at the relevant step):
+- **Backup root location** (step 7) — recommended `~/.config/config-sync/.backups/`,
+  which `fsops.backup` already supports by passing it as `backups_root`.
+- **adopt selection controls** (step 6) — flags to include/exclude specific programs
+  or categories, and whether the relevance floor applies to adoption as it does to
+  display.
