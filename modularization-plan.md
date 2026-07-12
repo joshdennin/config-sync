@@ -133,19 +133,23 @@ tests; suite at 26, all green.
 - Retargeted `tidy_move` onto `safe_move`, proving the substrate on the simplest
   action (behavior-preserving; a `movable` status guarantees no collision).
 
-## Step 4 — Typed `Entry` model + adoptability gate (→ `inventory.py`)
+## Step 4 — Typed `Entry` model + adoptability gate (→ `inventory.py`) ✅ DONE
 
 With writers sharing the field contract, the loose dict is no longer safe enough
 (misreading `flags`/`editable` can copy a secret into a repo or clobber a file).
+6 new tests; suite at 33, all green; `scan --json → health` round-trip verified.
 
-- Define `Entry` (dataclass), JSON-round-trippable so the interchange format is
-  unchanged.
-- **Add the adoptability predicate to the read-only engine**: consolidate the
-  secret/generated/editable/cache-state logic (today in `is_visible` + the
-  `editable`/`flags` computation) into one tested `is_adoptable(entry)` gate that
-  also **excludes anything under `~/.config/config-sync/`**. Reporters use it to
-  filter for display; `adopt` uses it as a **safety gate** that hard-excludes
-  `flags:["secret"]`.
+- **`Entry` dataclass** defines the record shape in one place. `analyze` and
+  `dangling_entry` now build an `Entry` and return `asdict(...)`, so records stay
+  plain dicts (the `scan --json` interchange format) and every existing consumer is
+  unchanged — but the two builders can no longer drift (a test asserts every record,
+  dangling included, carries exactly the `Entry` fields).
+- **`is_adoptable(rec, conf_home)`** — a hard safety gate for `adopt` (not a display
+  filter; `is_visible` stays as-is). Refuses secrets (which carry `editable=True`,
+  so the explicit flag check is the key protection), dangling links, any
+  non-editable entry (generated/cache/state/noise), and anything at or under
+  `~/.config/config-sync/` (never adopt the managed repo itself). Already-a-git-repo
+  handling is left to step 6 as adopt policy, not a safety concern.
 
 ## Step 5 — Reporter registry (→ `report.py`)
 

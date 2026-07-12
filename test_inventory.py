@@ -6,6 +6,7 @@ tools are needed; the filesystem fixture is a synthetic $HOME in a temp dir.
 
 import argparse
 import contextlib
+import dataclasses
 import io
 import os
 import tempfile
@@ -167,6 +168,15 @@ class ScanTest(unittest.TestCase):
                    if inventory.is_visible(e, scan_args(only_orphans=True))}
         self.assertEqual(orphans, {".config/polybar"})
 
+    def test_all_entries_share_the_entry_shape(self):
+        # analyze and dangling_entry both build through Entry, so every record
+        # — including the dangling one — carries exactly the Entry fields.
+        _, by_rel = self.scan()
+        expected = {f.name for f in dataclasses.fields(inventory.Entry)}
+        self.assertIn(".config/broken", by_rel)  # a dangling record is present
+        for e in by_rel.values():
+            self.assertEqual(set(e.keys()), expected)
+
     def test_cache_root_needs_all(self):
         inv, by_rel = self.scan()
         self.assertNotIn(".cache/junk", by_rel)
@@ -235,6 +245,35 @@ class HealthTest(unittest.TestCase):
         self.assertIn("## polybar", out)                         # section header
         self.assertIn("⚠️", out)                                 # orphan is a WARN
         self.assertTrue(out.endswith("\n"))
+
+
+class AdoptableTest(unittest.TestCase):
+    CONF = "/h/.config"  # repo_root -> /h/.config/config-sync
+
+    def adoptable(self, **kw):
+        return inventory.is_adoptable(rec(**kw), self.CONF)
+
+    def test_plain_editable_config_is_adoptable(self):
+        self.assertTrue(self.adoptable())  # rec() default: editable, config, no flags
+
+    def test_secret_is_never_adoptable_even_when_editable(self):
+        # secrets carry editable=True (sniffing is skipped), so the flag check
+        # is what protects them — the single most important exclusion.
+        self.assertFalse(self.adoptable(editable=True, flags=["secret"]))
+
+    def test_non_editable_and_dangling_excluded(self):
+        self.assertFalse(self.adoptable(editable=False))
+        self.assertFalse(self.adoptable(editable=None, flags=["dangling"]))
+
+    def test_cache_and_state_excluded(self):
+        self.assertFalse(self.adoptable(location="cache", editable=True))
+        self.assertFalse(self.adoptable(location="state", editable=True))
+
+    def test_the_managed_repo_is_never_adopted(self):
+        self.assertFalse(self.adoptable(path="/h/.config/config-sync"))
+        self.assertFalse(self.adoptable(path="/h/.config/config-sync/nvim"))
+        # a sibling that merely shares the name prefix is still adoptable
+        self.assertTrue(self.adoptable(path="/h/.config/config-sync-notes"))
 
 
 class FsopsTest(unittest.TestCase):

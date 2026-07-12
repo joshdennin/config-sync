@@ -55,7 +55,7 @@ import tomllib
 
 import tomli_w
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from fnmatch import fnmatch
 
@@ -396,6 +396,32 @@ def git_record(anchor):
 
 
 # --------------------------------------------------------------------------
+# Entry model — the per-entry record shape, defined once so `analyze` and
+# `dangling_entry` cannot drift. Records are stored and emitted as plain dicts
+# (the `scan --json` interchange format read back by `health`), so the builders
+# construct an Entry and return `asdict(...)`; every consumer still sees a dict.
+
+@dataclass
+class Entry:
+    path: str                          # resolved real path
+    rel: str                           # home-relative (or absolute if outside home)
+    location: str                      # config|shell|home|data|state|cache|unknown
+    kind: str | None = None            # file | dir (None for a dangling link)
+    via_symlink: list | None = None    # link paths that resolve to this entry
+    size: int | None = None
+    mtime: str | None = None
+    editable: bool | None = None       # human-editable config (False = generated/cache/state)
+    is_git_repo: bool = False
+    git: dict | None = None
+    program: str | None = None
+    category: str | None = None
+    installed: bool | None = None
+    flags: list = field(default_factory=list)  # secret | noise | dangling
+    relevance: int = 0
+    relevance_terms: list = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
 # Scan
 
 def resolve_roots(args, home):
@@ -499,36 +525,33 @@ def analyze(lpath, real, root_cat, home, qq, cfg):
 
     relevance, terms = score(name, kind, program, installed, git is not None,
                              registry_hit, text_only, json_heavy)
-    return {
-        "path": real,
-        "rel": rel_home(real, home),
-        "location": location,
-        "kind": kind,
-        "via_symlink": [lpath] if lpath != real else None,
-        "size": size,
-        "mtime": iso(st.st_mtime),
-        "editable": editable,
-        "is_git_repo": git is not None,
-        "git": git,
-        "program": program,
-        "category": cfg.program_category.get(program),
-        "installed": installed,
-        "flags": flags,
-        "relevance": relevance,
-        "relevance_terms": terms,
-    }
+    return asdict(Entry(
+        path=real,
+        rel=rel_home(real, home),
+        location=location,
+        kind=kind,
+        via_symlink=[lpath] if lpath != real else None,
+        size=size,
+        mtime=iso(st.st_mtime),
+        editable=editable,
+        is_git_repo=git is not None,
+        git=git,
+        program=program,
+        category=cfg.program_category.get(program),
+        installed=installed,
+        flags=flags,
+        relevance=relevance,
+        relevance_terms=terms,
+    ))
 
 
 def dangling_entry(lpath, root_cat, home, cfg):
-    return {
-        "path": lpath,
-        "rel": rel_home(lpath, home),
-        "location": categorize(os.path.basename(lpath), root_cat, cfg),
-        "kind": None, "via_symlink": None, "size": None, "mtime": None,
-        "editable": None, "is_git_repo": False, "git": None,
-        "program": None, "category": None, "installed": None,
-        "flags": ["dangling"], "relevance": 0, "relevance_terms": [],
-    }
+    return asdict(Entry(
+        path=lpath,
+        rel=rel_home(lpath, home),
+        location=categorize(os.path.basename(lpath), root_cat, cfg),
+        flags=["dangling"],
+    ))
 
 
 def build_inventory(args, home, cfg):
@@ -562,6 +585,26 @@ def build_inventory(args, home, cfg):
             "scanned_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "roots": [r for r, _ in roots], "all": args.all}
     return {"meta": meta, "entries": list(entries.values())}
+
+
+def is_adoptable(rec, conf_home):
+    """True when an entry is safe and sensible to copy into the managed repo.
+
+    A hard safety gate for `adopt`, not a display filter. Refuses:
+      - secrets (editable is True for them since sniffing is skipped, so this
+        must be checked explicitly — the single most important exclusion),
+      - dangling links and any non-editable entry (generated / cache / state /
+        noise),
+      - the managed repo itself (never adopt ~/.config/config-sync recursively).
+    """
+    if "secret" in rec["flags"] or "dangling" in rec["flags"]:
+        return False
+    if rec["editable"] is not True:
+        return False
+    if rec["location"] in ("cache", "state"):
+        return False
+    root = repo_root(conf_home)
+    return rec["path"] != root and not rec["path"].startswith(root + os.sep)
 
 
 # --------------------------------------------------------------------------
