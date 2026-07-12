@@ -12,58 +12,76 @@
 # Known-dotfiles registry: program -> home-relative rc files and config-dir
 # basenames. "pkgs" lists pacman package names when they differ from the
 # program name; "bin" the executable name when it differs (used for the
-# PATH installed-check and as the health section title).
+# PATH installed-check and as the health section title). "category" groups the
+# program in the health report — it is used verbatim as a group heading, so
+# write it in display form (e.g. "Terminal emulators"); it is optional, and
+# programs without one are grouped under "Uncategorized". Programs are listed
+# by category here purely for readability; the health report orders them by
+# what it finds on the system, not by their order in this file.
 
 [programs]
-bash       = { paths = [".bashrc", ".bash_profile", ".bash_logout", ".profile"] }
-zsh        = { paths = [".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", "zsh"] }
-fish       = { paths = ["fish"] }
-readline   = { paths = [".inputrc"], bin = "bash" }
-git        = { paths = [".gitconfig", ".gitignore_global", "git"] }
-tmux       = { paths = [".tmux.conf", "tmux"] }
-vim        = { paths = [".vimrc", ".vim"], pkgs = ["gvim"] }
-neovim     = { paths = ["nvim"], bin = "nvim" }
-emacs      = { paths = [".emacs", ".emacs.d", "emacs"] }
-kitty      = { paths = ["kitty"] }
-alacritty  = { paths = ["alacritty"] }
-ghostty    = { paths = ["ghostty"] }
-wezterm    = { paths = ["wezterm", ".wezterm.lua"] }
-foot       = { paths = ["foot"] }
-starship   = { paths = ["starship.toml"] }
-hyprland   = { paths = ["hypr"], bin = "Hyprland" }
-sway       = { paths = ["sway"] }
-i3         = { paths = ["i3"], pkgs = ["i3-wm"] }
-waybar     = { paths = ["waybar"] }
-polybar    = { paths = ["polybar"] }
-rofi       = { paths = ["rofi"] }
-wofi       = { paths = ["wofi"] }
-dunst      = { paths = ["dunst"] }
-mako       = { paths = ["mako"] }
-picom      = { paths = ["picom"] }
-xorg       = { paths = [".xinitrc", ".xprofile", ".Xresources", ".Xdefaults"], pkgs = ["xorg-server"], bin = "Xorg" }
-gtk        = { paths = ["gtk-3.0", "gtk-4.0", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], bin = "gtk-launch" }
-qt         = { paths = ["qt5ct", "qt6ct"], pkgs = ["qt5ct", "qt6ct"], bin = "qt6ct" }
-fontconfig = { paths = ["fontconfig"], bin = "fc-list" }
-mpv        = { paths = ["mpv"] }
-htop       = { paths = ["htop"] }
-btop       = { paths = ["btop"] }
-fastfetch  = { paths = ["fastfetch"] }
-ranger     = { paths = ["ranger"] }
-yazi       = { paths = ["yazi"] }
-lf         = { paths = ["lf"] }
-lazygit    = { paths = ["lazygit"] }
-zathura    = { paths = ["zathura"] }
-openssh    = { paths = [".ssh"], bin = "ssh" }
-gnupg      = { paths = [".gnupg"], bin = "gpg" }
-pass       = { paths = [".password-store"] }
-aws-cli    = { paths = [".aws"], pkgs = ["aws-cli-v2"], bin = "aws" }
-github-cli = { paths = ["gh"], pkgs = ["github-cli"], bin = "gh" }
-docker     = { paths = [".docker"] }
-kubectl    = { paths = [".kube"] }
-npm        = { paths = [".npmrc"] }
-cargo      = { paths = [".cargo"], pkgs = ["rust", "rustup"] }
-wget       = { paths = [".wgetrc"] }
-curl       = { paths = [".curlrc"] }
+# Shells & prompts
+bash       = { paths = [".bashrc", ".bash_profile", ".bash_logout", ".profile"], category = "Shells" }
+zsh        = { paths = [".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", "zsh"], category = "Shells" }
+fish       = { paths = ["fish"], category = "Shells" }
+readline   = { paths = [".inputrc"], bin = "bash", category = "Shells" }
+starship   = { paths = ["starship.toml"], category = "Shells" }
+# Version control
+git        = { paths = [".gitconfig", ".gitignore_global", "git"], category = "Version control" }
+lazygit    = { paths = ["lazygit"], category = "Version control" }
+github-cli = { paths = ["gh"], pkgs = ["github-cli"], bin = "gh", category = "Version control" }
+# Terminal multiplexers
+tmux       = { paths = [".tmux.conf", "tmux"], category = "Terminal multiplexers" }
+# Editors
+vim        = { paths = [".vimrc", ".vim"], pkgs = ["gvim"], category = "Editors" }
+neovim     = { paths = ["nvim"], bin = "nvim", category = "Editors" }
+emacs      = { paths = [".emacs", ".emacs.d", "emacs"], category = "Editors" }
+# Terminal emulators
+kitty      = { paths = ["kitty"], category = "Terminal emulators" }
+alacritty  = { paths = ["alacritty"], category = "Terminal emulators" }
+ghostty    = { paths = ["ghostty"], category = "Terminal emulators" }
+wezterm    = { paths = ["wezterm", ".wezterm.lua"], category = "Terminal emulators" }
+foot       = { paths = ["foot"], category = "Terminal emulators" }
+# Window managers & compositors
+hyprland   = { paths = ["hypr"], bin = "Hyprland", category = "Window managers" }
+sway       = { paths = ["sway"], category = "Window managers" }
+i3         = { paths = ["i3"], pkgs = ["i3-wm"], category = "Window managers" }
+picom      = { paths = ["picom"], category = "Compositors" }
+# Status bars, launchers & notifications
+waybar     = { paths = ["waybar"], category = "Status bars" }
+polybar    = { paths = ["polybar"], category = "Status bars" }
+rofi       = { paths = ["rofi"], category = "Application launchers" }
+wofi       = { paths = ["wofi"], category = "Application launchers" }
+dunst      = { paths = ["dunst"], category = "Notification daemons" }
+mako       = { paths = ["mako"], category = "Notification daemons" }
+# Display server & toolkits
+xorg       = { paths = [".xinitrc", ".xprofile", ".Xresources", ".Xdefaults"], pkgs = ["xorg-server"], bin = "Xorg", category = "Display servers" }
+gtk        = { paths = ["gtk-3.0", "gtk-4.0", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], bin = "gtk-launch", category = "GUI toolkits" }
+qt         = { paths = ["qt5ct", "qt6ct"], pkgs = ["qt5ct", "qt6ct"], bin = "qt6ct", category = "GUI toolkits" }
+fontconfig = { paths = ["fontconfig"], bin = "fc-list", category = "Fonts" }
+# Media & viewers
+mpv        = { paths = ["mpv"], category = "Media players" }
+zathura    = { paths = ["zathura"], category = "Document viewers" }
+# System monitors & file managers
+htop       = { paths = ["htop"], category = "System monitors" }
+btop       = { paths = ["btop"], category = "System monitors" }
+fastfetch  = { paths = ["fastfetch"], category = "System monitors" }
+ranger     = { paths = ["ranger"], category = "File managers" }
+yazi       = { paths = ["yazi"], category = "File managers" }
+lf         = { paths = ["lf"], category = "File managers" }
+# Secrets & security
+openssh    = { paths = [".ssh"], bin = "ssh", category = "Secrets & security" }
+gnupg      = { paths = [".gnupg"], bin = "gpg", category = "Secrets & security" }
+pass       = { paths = [".password-store"], category = "Secrets & security" }
+# Cloud & infrastructure
+aws-cli    = { paths = [".aws"], pkgs = ["aws-cli-v2"], bin = "aws", category = "Cloud & infrastructure" }
+docker     = { paths = [".docker"], category = "Cloud & infrastructure" }
+kubectl    = { paths = [".kube"], category = "Cloud & infrastructure" }
+# Language tooling & network
+npm        = { paths = [".npmrc"], category = "Language tooling" }
+cargo      = { paths = [".cargo"], pkgs = ["rust", "rustup"], category = "Language tooling" }
+wget       = { paths = [".wgetrc"], category = "Network tools" }
+curl       = { paths = [".curlrc"], category = "Network tools" }
 
 # --------------------------------------------------------------------------
 # Shell startup files → category "shell".
@@ -91,6 +109,22 @@ dirs = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
         "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
         "Electron", "teams", "Signal", "session", "pulse", "dconf",
         "ibus", "Trolltech.conf"]
+
+# --------------------------------------------------------------------------
+# Home-directory basenames dropped from the scan entirely — they never reach
+# the inventory (not even `scan --json`), unlike [noise]/[generated] which are
+# only hidden from the default listing. Use this for pure state, cache, runtime
+# and backup junk that is not config at all and would otherwise clutter $HOME's
+# report. Entries are glob patterns matched against home-dir basenames.
+
+[exclude]
+home = [".zsh_history", ".zcompdump*",          # zsh history + completion cache
+        ".wget-hsts",                            # wget HSTS state
+        ".Xauthority", ".dmrc",                  # X session auth / display-manager state
+        ".xsession-errors", ".xsession-errors.old",  # session logs
+        ".pulse-cookie", ".pki", ".nv",          # pulse cookie / NSS cert store / GL cache
+        ".var", ".icons", ".themes",             # flatpak data + legacy icon/theme data dirs
+        "*.bak", "*.bak.*"]                       # editor/backup leftovers (e.g. .zshrc.bak.*)
 
 # --------------------------------------------------------------------------
 # Machine-generated markers → hidden from the default listing. "exts" match a

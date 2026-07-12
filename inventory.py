@@ -24,8 +24,10 @@ lists, and the machine-generated denylists) live in a TOML config, not in the
 code. `scan` loads inventory-config.toml from next to this script by default,
 or the file given to --config; it is required, so a missing or malformed config
 is a hard error. The shipped file documents every section — [programs],
-[shell], [secrets], [noise], [generated] — and is edited by hand to teach the
-tool new programs or stores.
+[shell], [secrets], [noise], [exclude], [generated] — and is edited by hand to
+teach the tool new programs or stores. [exclude] names home-dir basenames (glob
+patterns) that are dropped from the scan entirely, so they never reach the
+inventory — for pure state/cache/runtime junk that is not config at all.
 
 Example — save a structured inventory, then render a health report to Markdown:
   inventory.py scan --json > inventory.json
@@ -45,6 +47,7 @@ import sys
 import tomllib
 from collections import Counter
 from datetime import datetime
+from fnmatch import fnmatch
 
 VERSION = "0.1.0"
 
@@ -54,14 +57,16 @@ VERSION = "0.1.0"
 # source of truth. (Structural constants that are code behavior, not curated
 # data — HOME_EXCLUDE, CAT_ORDER, _TEXT_BYTES — stay below.)
 
-PROGRAMS = {}          # program -> {"paths": [...], "pkgs"?: [...], "bin"?: str}
+PROGRAMS = {}          # program -> {"paths": [...], "pkgs"?, "bin"?, "category"?}
 REGISTRY_BY_PATH = {}  # rc-file / config-dir basename -> program (derived)
+PROGRAM_CATEGORY = {}  # program -> display category, for health grouping (derived)
 SHELL_FILES = set()    # home-dir rc files that get category "shell"
 SECRET_HOME = set()    # sensitive home-dir basenames (never content-sniffed)
 SECRET_CONFIG = set()  # sensitive ~/.config basenames
 NOISE_DIRS = set()     # state/cache dirs living under ~/.config
 GENERATED_EXTS = set()       # machine-generated file extensions (.-prefixed)
 GENERATED_DIR_NAMES = set()  # machine-generated directory basenames
+EXCLUDE_HOME = []            # home-dir basename globs never recorded (state/junk)
 
 HOME_EXCLUDE = {".config", ".cache", ".local"}  # scanned as their own roots
 
@@ -105,8 +110,9 @@ def load_config(path):
     they held. The config is required: a missing or malformed file is a hard
     error, since without it there are no tables to classify against.
     """
-    global PROGRAMS, REGISTRY_BY_PATH, SHELL_FILES, SECRET_HOME, SECRET_CONFIG
-    global NOISE_DIRS, GENERATED_EXTS, GENERATED_DIR_NAMES
+    global PROGRAMS, REGISTRY_BY_PATH, PROGRAM_CATEGORY, SHELL_FILES
+    global SECRET_HOME, SECRET_CONFIG
+    global NOISE_DIRS, GENERATED_EXTS, GENERATED_DIR_NAMES, EXCLUDE_HOME
     try:
         with open(path, "rb") as f:
             cfg = tomllib.load(f)
@@ -123,15 +129,20 @@ def load_config(path):
     for name, info in programs.items():
         if not isinstance(info, dict) or not isinstance(info.get("paths"), list):
             die(f"config: program {name!r} needs a 'paths' array")
+        if "category" in info and not isinstance(info["category"], str):
+            die(f"config: program {name!r} 'category' must be a string")
         parsed[name] = info
     PROGRAMS = parsed
     REGISTRY_BY_PATH = {p: prog for prog, i in PROGRAMS.items() for p in i["paths"]}
+    PROGRAM_CATEGORY = {prog: i["category"] for prog, i in PROGRAMS.items()
+                        if isinstance(i.get("category"), str)}
 
     SHELL_FILES = set(_str_list(_table(cfg, "shell"), "files", "[shell].files"))
     secrets = _table(cfg, "secrets")
     SECRET_HOME = set(_str_list(secrets, "home", "[secrets].home"))
     SECRET_CONFIG = set(_str_list(secrets, "config", "[secrets].config"))
     NOISE_DIRS = set(_str_list(_table(cfg, "noise"), "dirs", "[noise].dirs"))
+    EXCLUDE_HOME = _str_list(_table(cfg, "exclude"), "home", "[exclude].home")
     generated = _table(cfg, "generated")
     GENERATED_DIR_NAMES = set(_str_list(generated, "dir_names",
                                         "[generated].dir_names"))
@@ -467,6 +478,7 @@ def analyze(lpath, real, root_cat, home, qq):
         "is_git_repo": git is not None,
         "git": git,
         "program": program,
+        "program_category": PROGRAM_CATEGORY.get(program),
         "installed": installed,
         "flags": flags,
         "relevance": relevance,
@@ -481,7 +493,7 @@ def dangling_entry(lpath, root_cat, home):
         "category": categorize(os.path.basename(lpath), root_cat),
         "kind": None, "via_symlink": None, "size": None, "mtime": None,
         "editable": None, "is_git_repo": False, "git": None,
-        "program": None, "installed": None,
+        "program": None, "program_category": None, "installed": None,
         "flags": ["dangling"], "relevance": 0, "relevance_terms": [],
     }
 
@@ -496,7 +508,8 @@ def build_inventory(args, home):
         except OSError:
             continue
         for name in names:
-            if root_cat == "home" and (not name.startswith(".") or name in HOME_EXCLUDE):
+            if root_cat == "home" and (not name.startswith(".") or name in HOME_EXCLUDE
+                                       or any(fnmatch(name, p) for p in EXCLUDE_HOME)):
                 continue
             lpath = os.path.join(root, name)
             real = os.path.realpath(lpath)
@@ -699,24 +712,37 @@ def md_suggestion(text):
     return f"`{text}`" if text.startswith(_CMD_PREFIXES) else text
 
 
+UNCATEGORIZED = "Uncategorized"  # health group for programs with no category
+
+
 def render_health(inv, source):
-    sections = {}  # name -> records, in inventory order; unattributed last
+    sections = {}  # section title -> records, in inventory order; unattributed last
     for rec in inv["entries"]:
         sections.setdefault(section_key(rec) or "unattributed", []).append(rec)
     if "unattributed" in sections:
         sections["unattributed"] = sections.pop("unattributed")
 
-    # Findings are computed up front so the summary can lead the document.
-    computed = [(name, section_findings(recs)) for name, recs in sections.items()]
+    # Group each program's section under its category (baked into the entries at
+    # scan time, so this works from the stored inventory alone). Findings are
+    # computed up front so the summary can lead the document.
+    groups = {}  # category -> [(section title, findings)], first-appearance order
     totals = Counter()
     attention = []
-    for name, findings in computed:
+    programs = 0
+    for name, recs in sections.items():
+        findings = section_findings(recs)
+        cat = (name != "unattributed" and recs[0].get("program_category")) or UNCATEGORIZED
+        groups.setdefault(cat, []).append((name, findings))
         for sev, _, _ in findings:
             totals[sev] += 1
         bad = [t for s, t, _ in findings if s in ("WARN", "ERROR")]
         if bad:
             attention.append((name, "; ".join(t.removeprefix("git: ") for t in bad)))
-    programs = sum(1 for name, _ in computed if name != "unattributed")
+        if name != "unattributed":
+            programs += 1
+    # Uncategorized (and the unattributed section it holds) always sorts last.
+    ordered_cats = ([c for c in groups if c != UNCATEGORIZED]
+                    + ([UNCATEGORIZED] if UNCATEGORIZED in groups else []))
 
     meta = inv.get("meta", {})
     out = [
@@ -740,13 +766,15 @@ def render_health(inv, source):
         out += [f"- **{n}** — {msg}" for n, msg in attention]
         out.append("")
 
-    for name, findings in computed:
-        out += [f"## {name}", ""]
-        for sev, text, suggestion in findings:
-            out.append(f"- {SEV_ICON[sev]} {text}")
-            if suggestion:
-                out.append(f"  - ↳ {md_suggestion(suggestion)}")
-        out.append("")
+    for cat in ordered_cats:
+        out += [f"# {cat}", ""]
+        for name, findings in groups[cat]:
+            out += [f"## {name}", ""]
+            for sev, text, suggestion in findings:
+                out.append(f"- {SEV_ICON[sev]} {text}")
+                if suggestion:
+                    out.append(f"  - ↳ {md_suggestion(suggestion)}")
+            out.append("")
 
     return "\n".join(out).rstrip() + "\n"
 
