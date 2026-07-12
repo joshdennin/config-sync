@@ -15,7 +15,7 @@ class FsError(Exception):
     deleted existing state, or the source/target was not as expected."""
 
 
-def _ensure_parent(path):
+def ensure_parent(path):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -25,7 +25,7 @@ def safe_copy(src, dst):
     """Copy a file or directory tree src -> dst. Refuses if dst already exists."""
     if os.path.lexists(dst):
         raise FsError(f"refusing to overwrite existing path: {dst}")
-    _ensure_parent(dst)
+    ensure_parent(dst)
     if os.path.isdir(src) and not os.path.islink(src):
         shutil.copytree(src, dst, symlinks=True)
     else:
@@ -37,7 +37,7 @@ def safe_move(src, dst):
     """Move src -> dst. Refuses if dst already exists."""
     if os.path.lexists(dst):
         raise FsError(f"refusing to overwrite existing path: {dst}")
-    _ensure_parent(dst)
+    ensure_parent(dst)
     shutil.move(src, dst)
     return dst
 
@@ -47,7 +47,7 @@ def safe_symlink(target, link_path):
     already exists."""
     if os.path.lexists(link_path):
         raise FsError(f"refusing to overwrite existing path: {link_path}")
-    _ensure_parent(link_path)
+    ensure_parent(link_path)
     os.symlink(target, link_path)
     return link_path
 

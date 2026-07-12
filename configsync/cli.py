@@ -54,10 +54,11 @@ import os
 import shutil
 import sys
 
-from .inventory import (build_inventory, config_home, default_config_path, die,
-                        load_config, require_home)
+from .inventory import (ConfigSyncError, build_inventory, config_home,
+                        default_config_path, die, load_config, require_home,
+                        tilde)
 from .report import REPORTERS
-from .sync import (ADOPT_TIERS, LINK_STATUS, UNLINK_STATUS, _tilde, adopt_apply,
+from .sync import (ADOPT_TIERS, LINK_STATUS, UNLINK_STATUS, adopt_apply,
                    adopt_candidates, adopt_plan_row, link_apply, link_report,
                    link_survey, load_adopt_plan, load_manifest, tidy_move,
                    tidy_report, tidy_survey, unlink_apply, unlink_report,
@@ -141,9 +142,9 @@ def cmd_link(args):
     if args.apply:
         result = link_apply(manifest, home, conf)
         for p in result["linked"]:
-            print(f"  linked {_tilde(p, home)}")
+            print(f"  linked {tilde(p, home)}")
         for p, status in result["skipped"]:
-            print(f"  skipped {_tilde(p, home)} ({LINK_STATUS.get(status, ('', status))[1] or status})")
+            print(f"  skipped {tilde(p, home)} ({LINK_STATUS.get(status, ('', status))[1] or status})")
         if not result["linked"]:
             print("Nothing to link.")
     else:
@@ -160,9 +161,9 @@ def cmd_unlink(args):
     if args.apply:
         result = unlink_apply(manifest, home, conf)
         for p in result["restored"]:
-            print(f"  restored {_tilde(p, home)}")
+            print(f"  restored {tilde(p, home)}")
         for p, status in result["skipped"]:
-            print(f"  skipped {_tilde(p, home)} "
+            print(f"  skipped {tilde(p, home)} "
                   f"({UNLINK_STATUS.get(status, ('', status))[1] or status})")
         if not result["restored"]:
             print("Nothing to unlink.")
@@ -246,4 +247,8 @@ def parse_args(argv):
 
 def main(argv=None):
     args = parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ConfigSyncError as e:
+        print(f"config-sync: error: {e}", file=sys.stderr)
+        return 1

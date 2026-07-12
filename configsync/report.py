@@ -5,23 +5,24 @@ plain JSON-serializable dict — that is the contract these consume.
 """
 
 import json
+import os
 from collections import Counter
 from datetime import datetime
 
-from .inventory import CAT_ORDER, Config, display_path
+from .inventory import CAT_ORDER, Config, display_path, tilde
 
 
 # --------------------------------------------------------------------------
 # Human-readable listing
 
 def shorten(path, rec):
-    """Abbreviate the scanned home to ~ (derived from the record, so health
-    output is right even for an inventory taken on another machine)."""
+    """Abbreviate the scanned home to ~ in an arbitrary path (a git root, a
+    symlink source) that need not be the record's own. The home is recovered
+    from the record — path minus its precomputed `rel` — so the output is right
+    even for an inventory taken on another machine."""
     rel = rec["rel"]
-    if not rel.startswith("/") and rec["path"].endswith("/" + rel):
-        home = rec["path"][:-len(rel) - 1]
-        if path.startswith(home + "/"):
-            return "~" + path[len(home):]
+    if not rel.startswith("/") and rec["path"].endswith(os.sep + rel):
+        return tilde(path, rec["path"][:-len(rel) - 1])
     return path
 
 

@@ -5,6 +5,7 @@ reporters never do. Every filesystem change routes through fsops, so the
 overwrite/delete guarantees hold uniformly.
 """
 
+import contextlib
 import os
 import subprocess
 import tomllib
@@ -12,10 +13,10 @@ from datetime import datetime
 
 import tomli_w
 
-from .fsops import (FsError, _ensure_parent, backup, remove_symlink, restore,
+from .fsops import (FsError, backup, ensure_parent, remove_symlink, restore,
                     safe_copy, safe_move, safe_symlink)
 from .inventory import (die, display_path, is_adoptable, repo_path_for,
-                        repo_root)
+                        repo_root, tilde)
 
 
 # --------------------------------------------------------------------------
@@ -61,7 +62,7 @@ def load_manifest(conf_home):
 
 def save_manifest(conf_home, manifest):
     path = manifest_path(conf_home)
-    _ensure_parent(path)
+    ensure_parent(path)
     with open(path, "wb") as f:
         tomli_w.dump(manifest, f)
     return path
@@ -305,7 +306,7 @@ def ensure_repo_gitignore(repo):
             existing = f.read()
         if line in existing.split():
             return
-    _ensure_parent(path)
+    ensure_parent(path)
     with open(path, "a") as f:
         if existing and not existing.endswith("\n"):
             f.write("\n")
@@ -342,10 +343,17 @@ def link_apply(manifest, home, conf_home):
         if status not in ("link", "link-missing"):
             skipped.append((home_path, status))
             continue
+        bpath = ""
         try:
             bpath = backup(home_path, backups, home) if status == "link" else ""
             safe_symlink(repo_path, home_path)
         except (FsError, OSError) as e:
+            # Keep the step atomic: if the original was already moved aside but
+            # the symlink failed, put it back. Otherwise it would sit orphaned
+            # in the backups tree with nothing in the manifest to restore it.
+            if bpath:
+                with contextlib.suppress(FsError, OSError):
+                    restore(bpath, home_path)
             skipped.append((home_path, f"error: {e}"))
             continue
         entry["linked"] = True
@@ -356,10 +364,6 @@ def link_apply(manifest, home, conf_home):
     return {"linked": linked, "skipped": skipped}
 
 
-def _tilde(path, home):
-    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
-
-
 def link_report(rows, home, applied=False):
     print(f"link — {'Linked' if applied else 'Link plan (home → repo)'}\n")
     if not rows:
@@ -367,7 +371,7 @@ def link_report(rows, home, applied=False):
         return
     for entry, status in rows:
         label, note = LINK_STATUS[status]
-        arrow = f"{_tilde(entry['home_path'], home)} → {_tilde(entry['repo_path'], home)}"
+        arrow = f"{tilde(entry['home_path'], home)} → {tilde(entry['repo_path'], home)}"
         print(f"  {label:<5} {arrow}" + (f"   ({note})" if note else ""))
     todo = sum(1 for _, s in rows if s in ("link", "link-missing"))
     if not applied:
@@ -437,7 +441,7 @@ def unlink_report(rows, home, applied=False):
         return
     for entry, status in rows:
         label, note = UNLINK_STATUS[status]
-        print(f"  {label:<7} {_tilde(entry['home_path'], home)}"
+        print(f"  {label:<7} {tilde(entry['home_path'], home)}"
               + (f"   ({note})" if note else ""))
     todo = sum(1 for _, s in rows if s in ("restore", "unlink-only"))
     if not applied:

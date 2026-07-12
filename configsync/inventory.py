@@ -18,7 +18,6 @@ import os
 import platform
 import shutil
 import subprocess
-import sys
 import tomllib
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -64,9 +63,17 @@ CAT_ORDER = ["config", "shell", "home", "data", "state", "cache", "unknown"]
 _TEXT_BYTES = bytes(range(0x20, 0x7F)) + b"\t\n\r\x0b\x0c" + bytes(range(0x80, 0x100))
 
 
+class ConfigSyncError(Exception):
+    """A recoverable, user-facing error raised by the library layer (bad config,
+    unreadable manifest/plan, missing $HOME, …). The CLI entry point catches it
+    and turns it into a stderr message plus a non-zero exit; no library code
+    calls sys.exit itself, so these modules stay importable and testable."""
+
+
 def die(msg):
-    print(f"inventory.py: error: {msg}", file=sys.stderr)
-    sys.exit(1)
+    """Raise a user-facing error. Kept as a terse helper so call sites read as
+    `die(...)`; the message is surfaced by the CLI, not printed here."""
+    raise ConfigSyncError(msg)
 
 
 def require_home():
@@ -574,7 +581,16 @@ def is_adoptable(rec, conf_home):
 
 
 # --------------------------------------------------------------------------
-# Shared display helper (used by the reporters and by adopt's plan)
+# Shared display helpers (used by the reporters, the actions, and adopt's plan).
+# `tilde` is the one home-abbreviation primitive; `display_path` is the variant
+# for when only a stored record is in hand (no live $HOME — e.g. a `health`
+# report rendered from an inventory taken on another machine), working off the
+# precomputed `rel` instead.
+
+def tilde(path, home):
+    """Abbreviate an absolute path under `home` to its ~-prefixed form."""
+    return "~" + path[len(home):] if path.startswith(home + os.sep) else path
+
 
 def display_path(rec):
     rel = rec["rel"]

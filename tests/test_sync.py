@@ -72,7 +72,7 @@ class AdoptPlanIOTest(unittest.TestCase):
         self.assertIn("adopt = false", text)  # the edit instruction
 
     def test_missing_plan_is_hard_error(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+        with self.assertRaises(inventory.ConfigSyncError):
             sync.load_adopt_plan(os.path.join(self.tmp.name, "nope.toml"))
 
 
@@ -198,6 +198,23 @@ class LinkTest(unittest.TestCase):
             "x", os.path.join(self.conf, "gone"), os.path.join(self.repo, "ghostty"), "dir")
         self.assertEqual(sync.link_status(missing), "link-missing")
 
+    def test_failed_symlink_rolls_back_the_backup(self):
+        # If the original is moved aside but the symlink step fails, the original
+        # must be restored — never left orphaned in the backups tree.
+        ghostty = os.path.join(self.conf, "ghostty")
+        with mock.patch.object(sync, "safe_symlink",
+                               side_effect=OSError("disk full")):
+            result = self.apply()
+        self.assertFalse(os.path.islink(ghostty))          # no symlink created
+        self.assertTrue(os.path.isdir(ghostty))            # original restored in place
+        self.assertTrue(os.path.isfile(os.path.join(ghostty, "config")))
+        self.assertFalse(os.path.exists(                   # nothing orphaned in backups
+            os.path.join(self.repo, ".backups/.config/ghostty")))
+        self.assertEqual(result["linked"], [])
+        e = self.entry()
+        self.assertFalse(e["linked"])
+        self.assertEqual(e["backup_path"], "")
+
 
 class UnlinkTest(unittest.TestCase):
     def setUp(self):
@@ -294,7 +311,7 @@ class ManifestTest(unittest.TestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write('entries = "nope"\n')  # valid TOML, wrong shape (not a list)
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+        with self.assertRaises(inventory.ConfigSyncError):
             sync.load_manifest(self.conf)
 
 
