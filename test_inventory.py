@@ -8,6 +8,7 @@ import argparse
 import contextlib
 import dataclasses
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -245,6 +246,31 @@ class HealthTest(unittest.TestCase):
         self.assertIn("## polybar", out)                         # section header
         self.assertIn("⚠️", out)                                 # orphan is a WARN
         self.assertTrue(out.endswith("\n"))
+
+
+class ReportersTest(unittest.TestCase):
+    def setUp(self):
+        self.inv = {"meta": {"host": "h", "scanned_at": "now"},
+                    "entries": [rec(program="tmux", rel=".tmux.conf", location="shell")]}
+        self.args = scan_args()
+
+    def test_registry_has_the_three_formats(self):
+        self.assertEqual(set(inventory.REPORTERS), {"listing", "json", "health"})
+
+    def test_all_reporters_share_signature_and_return_text(self):
+        for fn in inventory.REPORTERS.values():
+            out = fn(self.inv, self.args, inventory.Config())
+            self.assertIsInstance(out, str)
+            self.assertTrue(out)
+
+    def test_json_reporter_round_trips_the_inventory(self):
+        out = inventory.report_json(self.inv, self.args, inventory.Config())
+        self.assertEqual(json.loads(out), self.inv)  # inventory stays plain data
+
+    def test_listing_and_health_content(self):
+        self.assertIn("Summary:", inventory.report_listing(self.inv, self.args))
+        health = inventory.REPORTERS["health"](self.inv, self.args, inventory.Config())
+        self.assertIn("# config inventory — health check", health)
 
 
 class AdoptableTest(unittest.TestCase):

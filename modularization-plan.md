@@ -151,12 +151,21 @@ With writers sharing the field contract, the loose dict is no longer safe enough
   `~/.config/config-sync/` (never adopt the managed repo itself). Already-a-git-repo
   handling is left to step 6 as adopt policy, not a safety concern.
 
-## Step 5 — Reporter registry (→ `report.py`)
+## Step 5 — Reporter registry (→ `report.py`) ✅ DONE
 
-- Normalize `render_listing` to **return** a string (move `print` to the command
-  wrapper) so all reporters share `(inv, args, cfg) -> str`.
-- Small registry: format name → reporter (`listing`, `health`, `json`).
-- Guardrail: inventory dict stays plain JSON-serializable.
+4 new tests; suite at 37, all green; listing/json/health CLI output unchanged.
+
+- `render_listing` normalized to `report_listing(inv, args, cfg)` — **returns** a
+  string; the `print` moved to `cmd_scan`.
+- Added `report_json` and a `report_health` adapter (over the unchanged
+  `render_health`, which tests still call by name), so all three share
+  `(inv, args, cfg) -> str`.
+- `REPORTERS = {"listing", "json", "health"}` registry; `cmd_scan` selects
+  `json`/`listing` (still driven by the existing `--json` flag), `cmd_health`
+  selects `health`. Adding a format is now one registry entry (a `--format` flag is
+  trivial to add later but out of scope here).
+- Guardrail held: a test confirms the inventory round-trips through `report_json`
+  unchanged — it stays plain JSON-serializable data.
 
 ## Step 6 — Feature 1: `adopt` (build dotfiles repo)  — COPY, preserving originals
 

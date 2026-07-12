@@ -661,7 +661,7 @@ def is_visible(rec, args):
     return (rec["relevance"] or 0) >= args.min_relevance
 
 
-def render_listing(inv, args):
+def report_listing(inv, args, cfg=None):
     entries = inv["entries"]
     shown = [e for e in entries if is_visible(e, args)]
     lines = []
@@ -698,7 +698,7 @@ def render_listing(inv, args):
     if hidden:
         lines.append(f"{hidden} hidden from listing (show with --generated / --secrets; "
                      f"--json is always complete)")
-    print("\n".join(lines))
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
@@ -853,6 +853,27 @@ def render_health(inv, source, cfg=Config()):
             out.append("")
 
     return "\n".join(out).rstrip() + "\n"
+
+
+# --------------------------------------------------------------------------
+# Reporters — read-only renderings of an inventory. All share the signature
+# (inv, args, cfg) -> str (some ignore args/cfg) so a format is selected by
+# name from REPORTERS; adding one is a single registry entry. The inventory
+# stays a plain JSON-serializable dict — that is the contract these consume.
+
+def report_json(inv, args=None, cfg=None):
+    return json.dumps(inv, indent=2)
+
+
+def report_health(inv, args, cfg=Config()):
+    return render_health(inv, getattr(args, "inventory", "?"), cfg)
+
+
+REPORTERS = {
+    "listing": report_listing,   # scan default: the human-readable table
+    "json": report_json,         # scan --json: the complete structured inventory
+    "health": report_health,     # health: the Markdown checkhealth report
+}
 
 
 # --------------------------------------------------------------------------
@@ -1107,11 +1128,7 @@ def cmd_scan(args):
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
     cfg = load_config(args.config or default_config_path())
     inv = build_inventory(args, os.path.abspath(home), cfg)
-    if args.json:
-        json.dump(inv, sys.stdout, indent=2)
-        print()
-    else:
-        render_listing(inv, args)
+    print(REPORTERS["json" if args.json else "listing"](inv, args, cfg))
     return 0
 
 
@@ -1124,7 +1141,7 @@ def cmd_health(args):
     if not isinstance(inv, dict) or not isinstance(inv.get("entries"), list):
         die(f"{args.inventory!r} is not a valid inventory "
             "(expected the {meta, entries} object written by `scan --json`)")
-    sys.stdout.write(render_health(inv, args.inventory))
+    sys.stdout.write(REPORTERS["health"](inv, args))
     return 0
 
 
