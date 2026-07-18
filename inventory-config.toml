@@ -1,0 +1,157 @@
+# inventory.py configuration — the source of truth for its classification tables.
+#
+# inventory.py ships with this file and loads it on every `scan`; there are no
+# built-in defaults in the code. Edit it to teach the tool new programs, mark
+# additional secret stores, or extend the machine-generated denylists. Point at
+# a different copy with `scan --config PATH`.
+#
+# The tool itself never writes to this file (or anything else) — it is yours to
+# maintain by hand.
+
+# --------------------------------------------------------------------------
+# Known-dotfiles registry: program -> home-relative rc files and config-dir
+# basenames. "pkgs" lists pacman package names when they differ from the
+# program name; "bin" the executable name when it differs (used for the
+# PATH installed-check and as the health section title). "category" groups the
+# program in the health report — it is used verbatim as a group heading, so
+# write it in display form (e.g. "Terminal emulators"); it is optional, and
+# programs without one are grouped under "Uncategorized". Programs are listed
+# by category here purely for readability; the health report orders them by
+# what it finds on the system, not by their order in this file.
+
+[programs]
+# Shells & prompts
+bash       = { paths = [".bashrc", ".bash_profile", ".bash_logout", ".profile"], category = "Shells" }
+zsh        = { paths = [".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", "zsh"], category = "Shells" }
+fish       = { paths = ["fish"], category = "Shells" }
+readline   = { paths = [".inputrc"], bin = "bash", category = "Shells" }
+starship   = { paths = ["starship.toml"], category = "Shells" }
+# Version control
+git        = { paths = [".gitconfig", ".gitignore_global", "git"], category = "Version control" }
+lazygit    = { paths = ["lazygit"], category = "Version control" }
+github-cli = { paths = ["gh"], pkgs = ["github-cli"], bin = "gh", category = "Version control" }
+chezmoi    = { paths = ["chezmoi"], category = "Version control" }
+# Terminal multiplexers
+tmux       = { paths = [".tmux.conf", "tmux"], category = "Terminal multiplexers" }
+# Editors
+vim        = { paths = [".vimrc", ".vim"], pkgs = ["gvim"], category = "Editors" }
+neovim     = { paths = ["nvim"], bin = "nvim", category = "Editors" }
+emacs      = { paths = [".emacs", ".emacs.d", "emacs"], category = "Editors" }
+micro      = { paths = ["micro"], category = "Editors" }
+# Terminal emulators
+kitty      = { paths = ["kitty"], category = "Terminal emulators" }
+alacritty  = { paths = ["alacritty"], category = "Terminal emulators" }
+ghostty    = { paths = ["ghostty"], category = "Terminal emulators" }
+wezterm    = { paths = ["wezterm", ".wezterm.lua"], category = "Terminal emulators" }
+foot       = { paths = ["foot"], category = "Terminal emulators" }
+# Window managers & compositors
+hyprland   = { paths = ["hypr"], bin = "Hyprland", category = "Window managers" }
+sway       = { paths = ["sway"], category = "Window managers" }
+i3         = { paths = ["i3"], pkgs = ["i3-wm"], category = "Window managers" }
+picom      = { paths = ["picom"], category = "Compositors" }
+# Status bars, launchers & notifications
+waybar     = { paths = ["waybar"], category = "Status bars" }
+polybar    = { paths = ["polybar"], category = "Status bars" }
+rofi       = { paths = ["rofi"], category = "Application launchers" }
+wofi       = { paths = ["wofi"], category = "Application launchers" }
+dunst      = { paths = ["dunst"], category = "Notification daemons" }
+mako       = { paths = ["mako"], category = "Notification daemons" }
+# Display server & toolkits
+xorg       = { paths = [".xinitrc", ".xprofile", ".Xresources", ".Xdefaults"], pkgs = ["xorg-server"], bin = "Xorg", category = "Display servers" }
+gtk        = { paths = ["gtk-3.0", "gtk-4.0", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], bin = "gtk-launch", category = "GUI toolkits" }
+qt         = { paths = ["qt5ct", "qt6ct"], pkgs = ["qt5ct", "qt6ct"], bin = "qt6ct", category = "GUI toolkits" }
+fontconfig = { paths = ["fontconfig"], bin = "fc-list", category = "Fonts" }
+# Media & viewers
+mpv        = { paths = ["mpv"], category = "Media players" }
+zathura    = { paths = ["zathura"], category = "Document viewers" }
+# System monitors & file managers
+htop       = { paths = ["htop"], category = "System monitors" }
+btop       = { paths = ["btop"], category = "System monitors" }
+fastfetch  = { paths = ["fastfetch"], category = "System monitors" }
+ranger     = { paths = ["ranger"], category = "File managers" }
+yazi       = { paths = ["yazi"], category = "File managers" }
+lf         = { paths = ["lf"], category = "File managers" }
+nemo       = { paths = ["nemo"], category = "File managers" }
+# Secrets & security
+openssh    = { paths = [".ssh"], bin = "ssh", category = "Secrets & security" }
+gnupg      = { paths = [".gnupg"], bin = "gpg", category = "Secrets & security" }
+pass       = { paths = [".password-store"], category = "Secrets & security" }
+# Cloud & infrastructure
+aws-cli    = { paths = [".aws"], pkgs = ["aws-cli-v2"], bin = "aws", category = "Cloud & infrastructure" }
+docker     = { paths = [".docker"], category = "Cloud & infrastructure" }
+kubectl    = { paths = [".kube"], category = "Cloud & infrastructure" }
+# Language tooling & network
+npm        = { paths = [".npmrc"], category = "Language tooling" }
+cargo      = { paths = [".cargo"], pkgs = ["rust", "rustup"], category = "Language tooling" }
+wget       = { paths = [".wgetrc"], category = "Network tools" }
+curl       = { paths = [".curlrc"], category = "Network tools" }
+# Desktop environments
+cinnamon         = { paths = ["cinnamon"], category = "Desktop environments" }
+cinnamon-session = { paths = ["cinnamon-session"], category = "Desktop environments" }
+dconf            = { paths = ["dconf"], category = "Desktop environments" }
+# Gaming & compatibility
+steam      = { paths = [".steam"], category = "Gaming" }
+protonplus = { paths = ["ProtonPlus"], category = "Gaming" }
+# Virtualization
+winboat    = { paths = ["winboat", ".winboat"], category = "Virtualization" }
+# Package managers
+flatpak    = { paths = ["flatpak"], category = "Package managers" }
+# LLM Harnesses
+claude = { paths = [".claude"], category = "Harness"}
+gemini = { paths = [".gemini"], category = "Harness"}
+# --------------------------------------------------------------------------
+# Shell startup files → category "shell".
+
+[shell]
+files = [".bashrc", ".bash_profile", ".bash_logout", ".profile",
+         ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".inputrc"]
+
+# --------------------------------------------------------------------------
+# Sensitive credential stores: never content-sniffed, and hidden from the
+# listing unless --secrets. "home" matches home-dir basenames, "config"
+# matches basenames under ~/.config.
+
+[secrets]
+home = [".ssh", ".gnupg", ".password-store", ".netrc", ".aws",
+        ".git-credentials", ".docker", ".kube", ".pki"]
+config = ["gh"]
+
+# --------------------------------------------------------------------------
+# State/cache dirs that live under ~/.config despite not being config →
+# flagged "noise" and deprioritized.
+
+[noise]
+home = [""]
+config = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
+        "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
+        "Electron", "teams", "Signal", "session", "dconf" ]
+
+# --------------------------------------------------------------------------
+# Home-directory basenames dropped from the scan entirely — they never reach
+# the inventory (not even `scan --json`), unlike [noise]/[generated] which are
+# only hidden from the default listing. Use this for pure state, cache, runtime
+# and backup junk that is not config at all and would otherwise clutter $HOME's
+# report. Entries are glob patterns matched against home-dir basenames.
+
+[exclude]
+home = [".zsh_history", ".zcompdump*",          # zsh history + completion cache
+        ".wget-hsts",                            # wget HSTS state
+        ".Xauthority", ".dmrc",                  # X session auth / display-manager state
+        ".xsession-errors", ".xsession-errors.old",  # session logs
+        ".pulse-cookie", ".pki", ".nv",          # pulse cookie / NSS cert store / GL cache
+        ".var", ".icons", ".themes",             # flatpak data + legacy icon/theme data dirs
+        "*.bak", "*.bak.*"]                       # editor/backup leftovers (e.g. .zshrc.bak.*)
+config = ["pulse", "evolution", "Epic", "cachyos-Hello.json", "unity3d", "mozilla"]
+
+# --------------------------------------------------------------------------
+# Machine-generated markers → hidden from the default listing. "exts" match a
+# file's extension (leading dot optional, case-insensitive); "dir_names" match
+# a directory basename anywhere in a probed tree.
+
+[generated]
+exts = [".db", ".sqlite", ".sqlite3", ".log", ".lock", ".pid", ".bak",
+        ".old", ".tmp", ".sock", ".socket", ".ldb", ".dat", ".pyc"]
+dir_names = ["logs", "log", "Cache", "cache", "CachedData", "Code Cache",
+             "GPUCache", "DawnCache", "ShaderCache", "GrShaderCache",
+             "Crashpad", "blob_storage", "Service Worker",
+             "Session Storage", "Local Storage", "IndexedDB", "databases"]
