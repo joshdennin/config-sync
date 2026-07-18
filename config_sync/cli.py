@@ -10,6 +10,9 @@ adopt  — write an editable plan of discovered configs (curated/extended/
          managed repo at ~/.config/config-sync/, write the manifest, git commit
 link   — report (and with --apply, perform) symlinking of adopted configs from
          the repo back into place, backing up each original first
+sync   — deploy a repo (typically cloned from another machine): report (and with
+         --apply, perform) symlinking of the adopted configs whose program is
+         installed here; skips the rest unless --force
 unlink — reverse `link`: report (and with --apply, perform) removing the
          symlinks and restoring the backed-up originals
 
@@ -35,10 +38,16 @@ adopt flags:
   --exclude NAME       drop these programs/categories from the plan (repeatable)
   --plan PATH          plan file to write, then read with --apply
   --apply              build the repo from the (edited) plan
+  --force              adopt into an already-populated (e.g. cloned) repo
   --config PATH        TOML classification config
 
 link / unlink flags:
   --apply              perform the change (default: report the plan only)
+
+sync flags:
+  --apply              create the symlinks (default: report the plan only)
+  --force              link every config, even ones whose program is absent here
+  --config PATH        TOML config (default: the repo's captured copy)
 
 `scan` and `health` never write, move, or delete anything; their only side
 effects are filesystem reads and read-only `pacman` / `git` queries. `tidy` is
@@ -55,14 +64,15 @@ import shutil
 import sys
 
 from .inventory import (ConfigSyncError, build_inventory, config_home,
-                        default_config_path, die, load_config, repo_root,
-                        require_home, tilde)
+                        default_config_path, die, load_config, load_pacman_qq,
+                        repo_config_path, repo_root, require_home, tilde)
 from .report import REPORTERS
 from .sync import (ADOPT_TIERS, LINK_STATUS, UNLINK_STATUS, adopt_apply,
-                   adopt_candidates, adopt_plan_rows, link_apply, link_report,
-                   link_survey, load_adopt_plan, load_manifest, omitted_programs,
-                   tidy_move, tidy_report, tidy_survey, unlink_apply,
-                   unlink_report, unlink_survey, write_adopt_plan)
+                   adopt_candidates, adopt_plan_rows, default_plan_path,
+                   ensure_repo_scaffold, link_apply, link_report, link_survey,
+                   load_adopt_plan, load_manifest, omitted_programs, sync_apply,
+                   sync_report, sync_survey, tidy_move, tidy_report, tidy_survey,
+                   unlink_apply, unlink_report, unlink_survey, write_adopt_plan)
 
 
 def cmd_scan(args):
@@ -103,8 +113,10 @@ def cmd_adopt(args):
     home = os.path.abspath(require_home())
     conf = config_home(home)
     cfg = load_config(args.config or default_config_path())
+    plan_path = args.plan or default_plan_path(conf)
     if args.apply:
-        result = adopt_apply(load_adopt_plan(args.plan), home, conf, cfg)
+        result = adopt_apply(load_adopt_plan(plan_path), home, conf, cfg,
+                             force=args.force)
         if result["copied"]:
             print(f"Adopted {len(result['copied'])} config(s) into {result['repo']}:")
             for p in result["copied"]:
@@ -122,21 +134,22 @@ def cmd_adopt(args):
     if shutil.which("pacman") is None:
         die("pacman not found on PATH — this tool needs Arch's pacman for "
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
+    ensure_repo_scaffold(conf)  # create the repo dir + capture config before writing
     scan_ns = argparse.Namespace(all=False, root=[])
     inv = build_inventory(scan_ns, home, cfg)
     cands = adopt_candidates(inv, args.select, args.include, args.exclude, conf)
     rows = adopt_plan_rows(cands, cfg, conf)
     omitted = omitted_programs(inv, rows)
-    write_adopt_plan(args.plan, rows, args.select, tilde(repo_root(conf), home), omitted)
-    print(f"Wrote {len(rows)} program(s) to {args.plan} ({args.select} tier).")
-    print(f"Edit the file, then run:  config-sync adopt --apply --plan {args.plan}")
+    write_adopt_plan(plan_path, rows, args.select, tilde(repo_root(conf), home), omitted)
+    print(f"Wrote {len(rows)} program(s) to {tilde(plan_path, home)} ({args.select} tier).")
+    print(f"Edit the file, then run:  config-sync adopt --apply --plan {plan_path}")
     return 0
 
 
 def cmd_link(args):
     home = os.path.abspath(require_home())
     conf = config_home(home)
-    manifest = load_manifest(conf)
+    manifest = load_manifest(conf, home)
     if not manifest["entries"]:
         die("nothing to link — no adopted configs "
             "(run `config-sync adopt --apply` first)")
@@ -156,7 +169,7 @@ def cmd_link(args):
 def cmd_unlink(args):
     home = os.path.abspath(require_home())
     conf = config_home(home)
-    manifest = load_manifest(conf)
+    manifest = load_manifest(conf, home)
     if not manifest["entries"]:
         die("nothing to unlink — no adopted configs")
     if args.apply:
@@ -170,6 +183,36 @@ def cmd_unlink(args):
             print("Nothing to unlink.")
     else:
         unlink_report(unlink_survey(manifest), home)
+    return 0
+
+
+def cmd_sync(args):
+    home = os.path.abspath(require_home())
+    conf = config_home(home)
+    if shutil.which("pacman") is None:
+        die("pacman not found on PATH — this tool needs Arch's pacman for "
+            "package-ownership queries (on Arch: sudo pacman -S pacman)")
+    # Prefer the repo's captured config (the registry it was built with) so a
+    # freshly cloned repo validates correctly; fall back to the package copy.
+    repo_cfg = repo_config_path(conf)
+    cfg = load_config(args.config or
+                      (repo_cfg if os.path.exists(repo_cfg) else default_config_path()))
+    manifest = load_manifest(conf, home)
+    if not manifest["entries"]:
+        die("nothing to sync — no adopted configs in the repo "
+            f"({tilde(repo_root(conf), home)}); clone or build it first")
+    qq = load_pacman_qq()
+    if args.apply:
+        result = sync_apply(manifest, home, conf, qq, cfg, force=args.force)
+        for p in result["linked"]:
+            print(f"  linked {tilde(p, home)}")
+        for p, status in result["skipped"]:
+            print(f"  skipped {tilde(p, home)} "
+                  f"({LINK_STATUS.get(status, ('', status))[1] or status})")
+        if not result["linked"]:
+            print("Nothing to link.")
+    else:
+        sync_report(sync_survey(manifest, qq, cfg), home)
     return 0
 
 
@@ -220,12 +263,16 @@ def parse_args(argv):
                    help="restrict the plan to these programs/categories (repeatable)")
     a.add_argument("--exclude", action="append", default=[], metavar="NAME",
                    help="drop these programs/categories from the plan (repeatable)")
-    a.add_argument("--plan", default="config-sync-adopt.toml", metavar="PATH",
+    a.add_argument("--plan", metavar="PATH",
                    help="plan file to write, then read back with --apply "
-                        "(default: ./config-sync-adopt.toml)")
+                        "(default: <repo>/config-sync-adopt.toml)")
     a.add_argument("--apply", action="store_true",
                    help="copy the plan's adopt=true entries into the repo, write "
                         "the manifest, and git commit")
+    a.add_argument("--force", action="store_true",
+                   help="adopt into a repo that already holds configs (e.g. one "
+                        "cloned from another machine); off by default to protect "
+                        "a shared repo")
     a.add_argument("--config", metavar="PATH",
                    help="TOML classification config (default: next to the package)")
     a.set_defaults(func=cmd_adopt)
@@ -236,6 +283,20 @@ def parse_args(argv):
     ln.add_argument("--apply", action="store_true",
                     help="create the symlinks (default: report the plan only)")
     ln.set_defaults(func=cmd_link)
+
+    sy = sub.add_parser("sync",
+                        help="deploy a repo (e.g. cloned from another machine): "
+                             "symlink the adopted configs whose program is "
+                             "installed here")
+    sy.add_argument("--apply", action="store_true",
+                    help="create the symlinks (default: report the plan only)")
+    sy.add_argument("--force", action="store_true",
+                    help="link every config, even those whose program is not "
+                         "installed here")
+    sy.add_argument("--config", metavar="PATH",
+                    help="TOML classification config (default: the repo's "
+                         "captured copy, else next to the package)")
+    sy.set_defaults(func=cmd_sync)
 
     ul = sub.add_parser("unlink",
                         help="reverse `link`: remove the symlinks and restore "

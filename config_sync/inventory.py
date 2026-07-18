@@ -663,6 +663,13 @@ def repo_root(conf_home):
     return os.path.join(conf_home, REPO_DIRNAME)
 
 
+def repo_config_path(conf_home):
+    """The classification config captured inside the managed repo. `adopt` writes
+    it there so a clone carries the registry it was built with; repo-centric
+    commands (`sync`) prefer it over the package copy."""
+    return os.path.join(repo_root(conf_home), "inventory-config.toml")
+
+
 def program_dirname(program, cfg):
     """The per-program repo directory name — the command name reads best."""
     return cfg.programs.get(program, {}).get("bin", program)

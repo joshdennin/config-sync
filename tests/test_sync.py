@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -175,7 +176,7 @@ class AdoptApplyTest(unittest.TestCase):
         # originals preserved (copy, not move) — reversible by construction
         self.assertTrue(os.path.isfile(os.path.join(self.home, ".config/ghostty/config")))
         self.assertEqual(set(result["copied"]), {"~/.config/ghostty", "~/.tmux.conf"})
-        self.assertEqual(len(sync.load_manifest(self.conf)["entries"]), 2)
+        self.assertEqual(len(sync.load_manifest(self.conf, self.home)["entries"]), 2)
 
     def test_apply_strips_git_venv_and_pycache_from_dir_copies(self):
         base = os.path.join(self.home, ".config/ghostty")
@@ -204,9 +205,32 @@ class AdoptApplyTest(unittest.TestCase):
     def test_reapply_is_idempotent(self):
         plan = self.plan(self.entry("tmux", "~/.tmux.conf"))
         sync.adopt_apply(plan, self.home, self.conf, self.cfg)
-        again = sync.adopt_apply(plan, self.home, self.conf, self.cfg)
+        # Re-adopting into the now-populated repo needs --force (guard); the copy
+        # itself is still idempotent — the already-adopted entry is skipped.
+        again = sync.adopt_apply(plan, self.home, self.conf, self.cfg, force=True)
         self.assertEqual(again["copied"], [])
         self.assertEqual(again["skipped"], ["~/.tmux.conf"])  # already adopted
+
+    def test_apply_refuses_populated_repo_without_force(self):
+        plan = self.plan(self.entry("tmux", "~/.tmux.conf"))
+        sync.adopt_apply(plan, self.home, self.conf, self.cfg)  # first fills the repo
+        with self.assertRaises(inventory.ConfigSyncError):
+            sync.adopt_apply(self.plan(self.entry("ghostty", "~/.config/ghostty")),
+                             self.home, self.conf, self.cfg)  # no force -> refused
+
+    def test_bookkeeping_files_do_not_trip_the_guard(self):
+        # A repo holding only the captured config/plan (plan phase) is not "populated".
+        os.makedirs(self.repo_dir())
+        for name in ("inventory-config.toml", "config-sync-adopt.toml", ".gitignore"):
+            with open(os.path.join(self.repo_dir(), name), "w") as f:
+                f.write("x\n")
+        self.assertFalse(sync.repo_has_adopted_content(self.repo_dir()))
+        result = sync.adopt_apply(self.plan(self.entry("tmux", "~/.tmux.conf")),
+                                  self.home, self.conf, self.cfg)  # proceeds
+        self.assertEqual(result["copied"], ["~/.tmux.conf"])
+
+    def repo_dir(self):
+        return os.path.join(self.conf, "config-sync")
 
 
 class LinkTest(unittest.TestCase):
@@ -225,13 +249,13 @@ class LinkTest(unittest.TestCase):
         m["entries"].append(sync.manifest_entry(
             "ghostty", os.path.join(self.conf, "ghostty"),
             os.path.join(self.repo, "ghostty"), "dir"))
-        sync.save_manifest(self.conf, m)
+        sync.save_manifest(self.conf, m, self.home)
 
     def apply(self):
-        return sync.link_apply(sync.load_manifest(self.conf), self.home, self.conf)
+        return sync.link_apply(sync.load_manifest(self.conf, self.home), self.home, self.conf)
 
     def entry(self):
-        return sync.load_manifest(self.conf)["entries"][0]
+        return sync.load_manifest(self.conf, self.home)["entries"][0]
 
     def test_real_original_is_a_link_candidate(self):
         self.assertEqual(sync.link_status(self.entry()), "link")
@@ -311,14 +335,14 @@ class UnlinkTest(unittest.TestCase):
         m["entries"].append(sync.manifest_entry(
             "ghostty", os.path.join(self.conf, "ghostty"),
             os.path.join(self.repo, "ghostty"), "dir"))
-        sync.save_manifest(self.conf, m)
-        sync.link_apply(sync.load_manifest(self.conf), self.home, self.conf)
+        sync.save_manifest(self.conf, m, self.home)
+        sync.link_apply(sync.load_manifest(self.conf, self.home), self.home, self.conf)
 
     def unapply(self):
-        return sync.unlink_apply(sync.load_manifest(self.conf), self.home, self.conf)
+        return sync.unlink_apply(sync.load_manifest(self.conf, self.home), self.home, self.conf)
 
     def entry(self):
-        return sync.load_manifest(self.conf)["entries"][0]
+        return sync.load_manifest(self.conf, self.home)["entries"][0]
 
     def test_linked_entry_is_a_restore_candidate(self):
         self.assertEqual(sync.unlink_status(self.entry()), "restore")
@@ -366,10 +390,11 @@ class ManifestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.conf = os.path.realpath(self.tmp.name)
+        self.home = "/h"  # manifest stores paths portable; resolved against home
         self.addCleanup(self.tmp.cleanup)
 
     def test_missing_manifest_reads_as_empty(self):
-        m = sync.load_manifest(self.conf)
+        m = sync.load_manifest(self.conf, self.home)
         self.assertEqual(m, {"version": sync.MANIFEST_VERSION, "entries": []})
 
     def test_save_then_load_round_trip(self):
@@ -377,9 +402,22 @@ class ManifestTest(unittest.TestCase):
         m["entries"].append(sync.manifest_entry(
             "neovim", "/h/.config/nvim",
             os.path.join(inventory.repo_root(self.conf), "nvim"), "dir"))
-        path = sync.save_manifest(self.conf, m)
+        path = sync.save_manifest(self.conf, m, self.home)
         self.assertTrue(path.endswith("config-sync/manifest.toml"))
-        self.assertEqual(sync.load_manifest(self.conf), m)
+        self.assertEqual(sync.load_manifest(self.conf, self.home), m)
+
+    def test_manifest_is_stored_portable(self):
+        # On disk the paths are machine-independent (~/-relative home, repo-relative
+        # repo) so a clone resolves them against another machine's $HOME.
+        m = sync.empty_manifest()
+        m["entries"].append(sync.manifest_entry(
+            "neovim", "/h/.config/nvim",
+            os.path.join(inventory.repo_root(self.conf), "nvim"), "dir"))
+        sync.save_manifest(self.conf, m, self.home)
+        with open(sync.manifest_path(self.conf), "rb") as f:
+            raw = tomllib.load(f)
+        self.assertEqual(raw["entries"][0]["home_path"], "~/.config/nvim")
+        self.assertEqual(raw["entries"][0]["repo_path"], "nvim")  # relative to repo root
 
     def test_manifest_entry_coerces_missing_program_to_empty(self):
         e = sync.manifest_entry(None, "/h/.config/foo", "/r/foo", "dir")
@@ -392,7 +430,87 @@ class ManifestTest(unittest.TestCase):
         with open(path, "w") as f:
             f.write('entries = "nope"\n')  # valid TOML, wrong shape (not a list)
         with self.assertRaises(inventory.ConfigSyncError):
-            sync.load_manifest(self.conf)
+            sync.load_manifest(self.conf, self.home)
+
+
+class ScaffoldTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.conf = os.path.join(os.path.realpath(self.tmp.name), ".config")
+
+    def test_scaffold_creates_repo_and_captures_config(self):
+        repo = sync.ensure_repo_scaffold(self.conf)
+        self.assertTrue(os.path.isdir(repo))                       # repo dir made first
+        captured = inventory.repo_config_path(self.conf)
+        self.assertTrue(os.path.isfile(captured))                  # config captured inside
+        # captured copy matches the package's shipped config
+        with open(captured) as a, open(inventory.default_config_path()) as b:
+            self.assertEqual(a.read(), b.read())
+
+    def test_scaffold_never_clobbers_an_existing_config(self):
+        os.makedirs(inventory.repo_root(self.conf))
+        captured = inventory.repo_config_path(self.conf)
+        with open(captured, "w") as f:
+            f.write("# customized/cloned copy\n")
+        sync.ensure_repo_scaffold(self.conf)
+        with open(captured) as f:
+            self.assertEqual(f.read(), "# customized/cloned copy\n")  # left intact
+
+
+class SyncTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.realpath(self.tmp.name)
+        self.conf = os.path.join(self.home, ".config")
+        self.repo = os.path.join(self.conf, "config-sync")
+        # a repo cloned from elsewhere: two programs' content + originals in place
+        m = sync.empty_manifest()
+        for prog in ("ghostty", "tmux"):
+            for base in (os.path.join(self.repo, prog), os.path.join(self.conf, prog)):
+                os.makedirs(base)
+                with open(os.path.join(base, "config"), "w") as f:
+                    f.write("x\n")
+            m["entries"].append(sync.manifest_entry(
+                prog, os.path.join(self.conf, prog),
+                os.path.join(self.repo, prog), "dir"))
+        sync.save_manifest(self.conf, m, self.home)
+        # deterministic install check: a program is "installed" iff it's in qq
+        p = mock.patch.object(sync, "check_installed",
+                              lambda prog, qq, cfg: prog in qq)
+        p.start()
+        self.addCleanup(p.stop)
+        self.cfg = inventory.Config()
+
+    def manifest(self):
+        return sync.load_manifest(self.conf, self.home)
+
+    def test_survey_flags_installed_and_missing(self):
+        rows = sync.sync_survey(self.manifest(), {"tmux"}, self.cfg)
+        by_prog = {e["program"]: installed for e, installed, _ in rows}
+        self.assertEqual(by_prog, {"tmux": True, "ghostty": False})
+
+    def test_apply_links_only_installed(self):
+        result = sync.sync_apply(self.manifest(), self.home, self.conf,
+                                 {"tmux"}, self.cfg)
+        self.assertTrue(os.path.islink(os.path.join(self.conf, "tmux")))       # installed -> linked
+        self.assertFalse(os.path.islink(os.path.join(self.conf, "ghostty")))   # missing -> skipped
+        self.assertEqual([tilde for tilde, s in result["skipped"]
+                          if s == "not-installed"],
+                         [os.path.join(self.conf, "ghostty")])
+
+    def test_force_links_even_when_not_installed(self):
+        sync.sync_apply(self.manifest(), self.home, self.conf, set(), self.cfg,
+                        force=True)
+        self.assertTrue(os.path.islink(os.path.join(self.conf, "ghostty")))    # forced
+        self.assertTrue(os.path.islink(os.path.join(self.conf, "tmux")))
+
+    def test_apply_keeps_all_entries_in_the_manifest(self):
+        sync.sync_apply(self.manifest(), self.home, self.conf, {"tmux"}, self.cfg)
+        # the skipped (not-installed) entry is not dropped from the manifest
+        progs = {e["program"] for e in self.manifest()["entries"]}
+        self.assertEqual(progs, {"ghostty", "tmux"})
 
 
 class TidyTest(unittest.TestCase):
