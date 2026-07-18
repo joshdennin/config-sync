@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from configsync import inventory, report
+from config_sync import inventory, report
 
 from .helpers import rec, scan_args
 

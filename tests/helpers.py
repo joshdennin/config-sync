@@ -1,4 +1,4 @@
-"""Shared fixtures for the configsync test suite."""
+"""Shared fixtures for the config_sync test suite."""
 
 import argparse
 

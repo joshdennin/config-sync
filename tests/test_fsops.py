@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from configsync import fsops
+from config_sync import fsops
 
 
 class FsopsTest(unittest.TestCase):

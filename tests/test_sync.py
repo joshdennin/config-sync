@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from configsync import inventory, sync
+from config_sync import inventory, sync
 
 from .helpers import rec, scan_args
 

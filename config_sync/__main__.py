@@ -1,4 +1,4 @@
-"""Entry point for `python -m configsync`."""
+"""Entry point for `python -m config_sync`."""
 
 import sys
 

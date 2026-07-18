@@ -7,7 +7,7 @@ dotfiles repo from what it finds, symlinks that repo back into place, and can
 undo either step. Discovery is always read-only; every mutation is opt-in,
 copy-first, and reversible.
 
-The console script is `config-sync` (`configsync.cli:main`); `python -m configsync`
+The console script is `config-sync` (`config_sync.cli:main`); `python -m config_sync`
 is equivalent. Target runtime is Python 3.11+ (stdlib `tomllib`); the only
 third-party dependency is `tomli_w`, used to *write* TOML.
 
@@ -62,7 +62,7 @@ file edit, not a code change.
 ## Module layout
 
 ```
-configsync/
+config_sync/
   inventory.py  # READ-ONLY engine: Config/load_config, content probes, the
                 #   capture/status_counts/git_record shell-out seam, the scan
                 #   (build_inventory/analyze/score/categorize), the Entry model,

@@ -10,10 +10,10 @@ requires-python = ">=3.11"
 dependencies = ["tomli-w>=1.0"]
 
 [project.scripts]
-config-sync = "configsync.cli:main"
+config-sync = "config_sync.cli:main"
 
 [tool.setuptools]
-packages = ["configsync"]
+packages = ["config_sync"]
 
 [tool.setuptools.package-data]
-configsync = ["inventory-config.toml"]
+config_sync = ["inventory-config.toml"]

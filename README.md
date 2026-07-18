@@ -19,7 +19,7 @@ package-ownership queries). The only third-party dependency is `tomli-w`.
 pip install -e .
 ```
 
-This installs the `config-sync` console script; `python -m configsync` is
+This installs the `config-sync` console script; `python -m config_sync` is
 equivalent.
 
 ## Commands
