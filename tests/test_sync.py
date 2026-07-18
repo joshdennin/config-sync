@@ -1,6 +1,7 @@
 import contextlib
 import io
 import os
+import shutil
 import tempfile
 import tomllib
 import unittest
@@ -273,10 +274,19 @@ class LinkTest(unittest.TestCase):
         self.assertTrue(e["backup_path"])
         self.assertEqual(result["linked"], [ghostty])
 
-    def test_backups_are_git_ignored(self):
+    def test_backups_and_link_state_are_git_ignored(self):
         self.apply()
         with open(os.path.join(self.repo, ".gitignore")) as f:
-            self.assertIn(".backups/", f.read())
+            gitignore = f.read()
+        self.assertIn(".backups/", gitignore)
+        self.assertIn(".link-state.toml", gitignore)  # machine-local, never committed
+
+    def test_link_writes_state_not_the_manifest(self):
+        before = open(sync.manifest_path(self.conf), "rb").read()
+        self.apply()
+        after = open(sync.manifest_path(self.conf), "rb").read()
+        self.assertEqual(before, after)  # linking never rewrites the shared manifest
+        self.assertTrue(os.path.isfile(sync.link_state_path(self.conf)))
 
     def test_reapply_is_idempotent(self):
         self.apply()
@@ -406,18 +416,56 @@ class ManifestTest(unittest.TestCase):
         self.assertTrue(path.endswith("config-sync/manifest.toml"))
         self.assertEqual(sync.load_manifest(self.conf, self.home), m)
 
-    def test_manifest_is_stored_portable(self):
-        # On disk the paths are machine-independent (~/-relative home, repo-relative
-        # repo) so a clone resolves them against another machine's $HOME.
+    def test_manifest_is_stored_portable_and_mapping_only(self):
+        # On disk the paths are machine-independent (home-root files ~/-relative,
+        # repo paths repo-relative) and carry no machine-local link state.
         m = sync.empty_manifest()
         m["entries"].append(sync.manifest_entry(
-            "neovim", "/h/.config/nvim",
-            os.path.join(inventory.repo_root(self.conf), "nvim"), "dir"))
+            "git", "/h/.gitconfig",
+            os.path.join(inventory.repo_root(self.conf), "git/.gitconfig"), "file"))
         sync.save_manifest(self.conf, m, self.home)
         with open(sync.manifest_path(self.conf), "rb") as f:
-            raw = tomllib.load(f)
-        self.assertEqual(raw["entries"][0]["home_path"], "~/.config/nvim")
-        self.assertEqual(raw["entries"][0]["repo_path"], "nvim")  # relative to repo root
+            row = tomllib.load(f)["entries"][0]
+        self.assertEqual(row["home_path"], "~/.gitconfig")
+        self.assertEqual(row["repo_path"], "git/.gitconfig")  # relative to repo root
+        self.assertNotIn("linked", row)       # link state is not in the manifest
+        self.assertNotIn("backup_path", row)
+
+    def test_config_home_paths_survive_a_different_xdg_dir(self):
+        # A config under ~/.config is stored config-relative ($CONFIG/…) so it
+        # follows the *target* machine's $XDG_CONFIG_HOME, not a hard-coded path.
+        conf_a = os.path.join(self.tmp.name, "a", ".config")
+        os.makedirs(inventory.repo_root(conf_a))
+        m = sync.empty_manifest()
+        m["entries"].append(sync.manifest_entry(
+            "neovim", os.path.join(conf_a, "nvim"),
+            os.path.join(inventory.repo_root(conf_a), "nvim"), "dir"))
+        sync.save_manifest(conf_a, m, os.path.join(self.tmp.name, "a"))
+        with open(sync.manifest_path(conf_a), "rb") as f:
+            self.assertEqual(tomllib.load(f)["entries"][0]["home_path"], "$CONFIG/nvim")
+        # "clone" it onto a machine whose config dir is elsewhere, then resolve
+        conf_b = os.path.join(self.tmp.name, "b", "xdgconf")
+        os.makedirs(inventory.repo_root(conf_b))
+        shutil.copy(sync.manifest_path(conf_a), sync.manifest_path(conf_b))
+        loaded = sync.load_manifest(conf_b, os.path.join(self.tmp.name, "b"))
+        self.assertEqual(loaded["entries"][0]["home_path"],
+                         os.path.join(conf_b, "nvim"))  # lands under the new XDG dir
+
+    def test_link_state_is_stored_separately_and_merged_on_load(self):
+        m = sync.empty_manifest()
+        e = sync.manifest_entry("neovim", "/h/.config/nvim",
+            os.path.join(inventory.repo_root(self.conf), "nvim"), "dir")
+        e["linked"] = True
+        e["backup_path"] = os.path.join(sync.backups_root(self.conf), ".config/nvim")
+        m["entries"].append(e)
+        sync.save_manifest(self.conf, m, self.home)
+        sync.save_link_state(self.conf, m, self.home)
+        with open(sync.manifest_path(self.conf), "rb") as f:
+            self.assertNotIn("linked", tomllib.load(f)["entries"][0])
+        self.assertTrue(os.path.isfile(sync.link_state_path(self.conf)))
+        loaded = sync.load_manifest(self.conf, self.home)["entries"][0]
+        self.assertTrue(loaded["linked"])                       # state merged back
+        self.assertEqual(loaded["backup_path"], e["backup_path"])
 
     def test_manifest_entry_coerces_missing_program_to_empty(self):
         e = sync.manifest_entry(None, "/h/.config/foo", "/r/foo", "dir")
@@ -511,6 +559,36 @@ class SyncTest(unittest.TestCase):
         # the skipped (not-installed) entry is not dropped from the manifest
         progs = {e["program"] for e in self.manifest()["entries"]}
         self.assertEqual(progs, {"ghostty", "tmux"})
+
+    def test_uninstalled_program_symlink_is_unlinked(self):
+        # link both (force), then a later sync where ghostty is gone undoes only
+        # the symlink config-sync created and restores the original.
+        sync.sync_apply(self.manifest(), self.home, self.conf, set(), self.cfg,
+                        force=True)
+        ghostty = os.path.join(self.conf, "ghostty")
+        self.assertTrue(os.path.islink(ghostty))
+        result = sync.sync_apply(self.manifest(), self.home, self.conf,
+                                 {"tmux"}, self.cfg)
+        self.assertEqual(result["unlinked"], [ghostty])
+        self.assertFalse(os.path.islink(ghostty))              # symlink removed
+        self.assertTrue(os.path.isdir(ghostty))                # original restored
+        self.assertTrue(os.path.islink(os.path.join(self.conf, "tmux")))  # installed kept
+
+    def test_uninstalled_but_unlinked_is_left_untouched(self):
+        # ghostty was never linked here, so there's nothing to undo — just skipped.
+        result = sync.sync_apply(self.manifest(), self.home, self.conf,
+                                 {"tmux"}, self.cfg)
+        self.assertEqual(result["unlinked"], [])
+        ghostty = os.path.join(self.conf, "ghostty")
+        self.assertTrue(os.path.isdir(ghostty) and not os.path.islink(ghostty))
+
+    def test_survey_plans_unlink_for_linked_uninstalled(self):
+        sync.sync_apply(self.manifest(), self.home, self.conf, set(), self.cfg,
+                        force=True)
+        rows = sync.sync_survey(self.manifest(), {"tmux"}, self.cfg)
+        actions = {e["program"]: action for e, _, action in rows}
+        self.assertEqual(actions["ghostty"], "unlink")  # gone + config-sync's symlink
+        self.assertEqual(actions["tmux"], "done")       # installed, already linked
 
 
 class TidyTest(unittest.TestCase):

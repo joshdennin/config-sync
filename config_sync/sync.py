@@ -17,9 +17,10 @@ import tomli_w
 
 from .fsops import (FsError, backup, ensure_parent, remove_symlink, restore,
                     safe_copy, safe_move, safe_symlink)
-from .inventory import (UNCATEGORIZED, check_installed, default_config_path,
-                        die, display_path, is_adoptable, ordered_categories,
-                        repo_config_path, repo_path_for, repo_root, tilde)
+from .inventory import (CONFIG_NAME, UNCATEGORIZED, check_installed,
+                        default_config_path, die, display_path, is_adoptable,
+                        ordered_categories, repo_config_path, repo_path_for,
+                        repo_root, tilde)
 
 
 # --------------------------------------------------------------------------
@@ -31,10 +32,30 @@ from .inventory import (UNCATEGORIZED, check_installed, default_config_path,
 MANIFEST_NAME = "manifest.toml"
 MANIFEST_VERSION = 1
 BACKUP_DIRNAME = ".backups"  # link's originals tree, under the repo (git-ignored)
+# Machine-local link state (which entries are linked here, and where their
+# originals were backed up). Kept out of the committed manifest so deploying on
+# one machine never dirties the shared repo or conflicts on `git pull`.
+LINK_STATE_NAME = ".link-state.toml"
+LINK_STATE_VERSION = 1
+GIT_DIR = ".git"            # a program's own repo metadata / the managed repo's
+GITIGNORE_NAME = ".gitignore"
+
+# The committed manifest row is the portable home<->repo mapping only; `linked`
+# and `backup_path` are machine-local and live in the link-state file instead
+# (see _relativize_entry, which emits exactly these keys).
+
+# Marker for a home path that lives under ~/.config (config_home): stored
+# relative to config_home so it resolves against the *target* machine's
+# $XDG_CONFIG_HOME, not a hard-coded ~/.config. Home-root dotfiles stay ~/-relative.
+CONFIG_PREFIX = "$CONFIG/"
 
 
 def manifest_path(conf_home):
     return os.path.join(repo_root(conf_home), MANIFEST_NAME)
+
+
+def link_state_path(conf_home):
+    return os.path.join(repo_root(conf_home), LINK_STATE_NAME)
 
 
 def empty_manifest():
@@ -42,33 +63,66 @@ def empty_manifest():
 
 
 def manifest_entry(program, home_path, repo_path, kind):
-    """One manifest row; `linked`/`backup_path` are filled in by `link`. TOML
-    cannot hold null, so an unattributed program is stored as ""."""
+    """One manifest row; `linked`/`backup_path` are machine-local runtime state
+    (persisted separately by `link`). TOML cannot hold null, so an unattributed
+    program is stored as ""."""
     return {"program": program or "", "home_path": home_path,
             "repo_path": repo_path, "kind": kind, "linked": False,
             "backup_path": ""}
 
 
+def _relativize_home(home_path, home, conf_home):
+    """Absolute home path -> portable string. A path under config_home is stored
+    config-relative ($CONFIG/…) so it follows the target's $XDG_CONFIG_HOME; any
+    other path is stored ~/-relative."""
+    if home_path == conf_home or home_path.startswith(conf_home + os.sep):
+        return CONFIG_PREFIX + os.path.relpath(home_path, conf_home)
+    return tilde(home_path, home)
+
+
+def _resolve_home(stored, home, conf_home):
+    """Portable string -> absolute home path, the inverse of _relativize_home."""
+    if stored.startswith(CONFIG_PREFIX):
+        return os.path.join(conf_home, stored[len(CONFIG_PREFIX):])
+    return expand_home(stored, home)
+
+
 def _resolve_entry(entry, home, conf_home):
-    """Portable (on-disk) -> absolute (in-memory): expand the ~/-relative home
-    path and the repo-relative repo path against this machine's roots."""
+    """Portable (on-disk) -> absolute (in-memory): resolve the home path against
+    this machine's $HOME/$XDG_CONFIG_HOME and the repo path against the repo."""
     return {**entry,
-            "home_path": expand_home(entry["home_path"], home),
+            "home_path": _resolve_home(entry["home_path"], home, conf_home),
             "repo_path": os.path.join(repo_root(conf_home), entry["repo_path"])}
 
 
 def _relativize_entry(entry, home, conf_home):
-    """Absolute (in-memory) -> portable (on-disk): store the home path ~/-relative
-    and the repo path relative to the repo root, so the manifest resolves on any
-    machine. `backup_path` is machine-local runtime state and left untouched."""
-    return {**entry,
-            "home_path": tilde(entry["home_path"], home),
-            "repo_path": os.path.relpath(entry["repo_path"], repo_root(conf_home))}
+    """Absolute (in-memory) -> portable (on-disk mapping): home path config- or
+    ~/-relative, repo path relative to the repo root, so it resolves anywhere."""
+    return {"program": entry["program"],
+            "home_path": _relativize_home(entry["home_path"], home, conf_home),
+            "repo_path": os.path.relpath(entry["repo_path"], repo_root(conf_home)),
+            "kind": entry["kind"]}
+
+
+def _load_link_state(conf_home):
+    """Read the machine-local link state as {portable_home_path: {linked,
+    backup_path}}, or empty when the repo has none (e.g. a fresh clone)."""
+    path = link_state_path(conf_home)
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        die(f"cannot read link state {path!r}: {e}")
+    entries = data.get("entries", {})
+    return entries if isinstance(entries, dict) else {}
 
 
 def load_manifest(conf_home, home):
-    """Read the manifest, or an empty one if the repo has none yet. Entries are
-    stored portable and resolved to absolute paths for the rest of the tool."""
+    """Read the manifest (portable mapping) and merge the machine-local link
+    state, resolving every path to absolute for the rest of the tool. Returns an
+    empty manifest if the repo has none yet."""
     path = manifest_path(conf_home)
     try:
         with open(path, "rb") as f:
@@ -79,18 +133,50 @@ def load_manifest(conf_home, home):
         die(f"cannot read manifest {path!r}: {e}")
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         die(f"{path!r} is not a valid manifest (expected a {{version, entries}} object)")
-    data["entries"] = [_resolve_entry(e, home, conf_home) for e in data["entries"]]
+    state = _load_link_state(conf_home)
+    repo = repo_root(conf_home)
+    entries = []
+    for e in data["entries"]:
+        st = state.get(e["home_path"], {})
+        bpath = st.get("backup_path", "")
+        merged = {**e, "linked": bool(st.get("linked", False)),
+                  "backup_path": os.path.join(repo, bpath) if bpath else ""}
+        entries.append(_resolve_entry(merged, home, conf_home))
+    data["entries"] = entries
     return data
 
 
 def save_manifest(conf_home, manifest, home):
+    """Write the committed manifest — the portable mapping only. Link state is
+    persisted separately (save_link_state), so this never records machine-local
+    detail into the shared repo."""
     path = manifest_path(conf_home)
     ensure_parent(path)
-    out = {**manifest,
+    out = {"version": manifest.get("version", MANIFEST_VERSION),
            "entries": [_relativize_entry(e, home, conf_home)
                        for e in manifest["entries"]]}
     with open(path, "wb") as f:
         tomli_w.dump(out, f)
+    return path
+
+
+def save_link_state(conf_home, manifest, home):
+    """Persist the machine-local link state (git-ignored) for the linked entries,
+    keyed by the same portable home path the manifest uses. Backup paths are
+    stored repo-relative; unlinked entries are simply omitted."""
+    repo = repo_root(conf_home)
+    entries = {}
+    for e in manifest["entries"]:
+        if not e.get("linked"):
+            continue
+        key = _relativize_home(e["home_path"], home, conf_home)
+        bpath = e.get("backup_path") or ""
+        entries[key] = {"linked": True,
+                        "backup_path": os.path.relpath(bpath, repo) if bpath else ""}
+    path = link_state_path(conf_home)
+    ensure_parent(path)
+    with open(path, "wb") as f:
+        tomli_w.dump({"version": LINK_STATE_VERSION, "entries": entries}, f)
     return path
 
 
@@ -202,14 +288,18 @@ ADOPT_PLAN_NAME = "config-sync-adopt.toml"  # default plan file, captured in the
 # every level of the tree). A managed config's own git metadata is stripped so
 # the repo does not swallow a nested repo; virtualenvs and bytecode caches are
 # bulky and regenerable, so they are dropped for every program.
-ADOPT_IGNORE = ("__pycache__", ".venv", ".git", ".gitignore")
+ADOPT_IGNORE = ("__pycache__", ".venv", GIT_DIR, GITIGNORE_NAME)
 
 # Repo entries that are the tool's own bookkeeping, not adopted program content.
 # Their presence does not make the repo "populated" for the adopt guard, so the
 # config/plan written in the plan phase never blocks the first `adopt --apply`.
 REPO_BOOKKEEPING = frozenset({
-    ".git", ".gitignore", BACKUP_DIRNAME, MANIFEST_NAME,
-    os.path.basename(repo_config_path("")), ADOPT_PLAN_NAME})
+    GIT_DIR, GITIGNORE_NAME, BACKUP_DIRNAME, MANIFEST_NAME, LINK_STATE_NAME,
+    CONFIG_NAME, ADOPT_PLAN_NAME})
+
+# Repo-relative paths kept out of git: the backups tree and the machine-local
+# link state (both are per-machine and must not travel with the shared repo).
+GITIGNORE_LINES = (BACKUP_DIRNAME + "/", LINK_STATE_NAME)
 
 
 def repo_has_adopted_content(repo):
@@ -439,20 +529,23 @@ def backups_root(conf_home):
 
 
 def ensure_repo_gitignore(repo):
-    """Keep the backups tree out of the repo's git history (idempotent)."""
-    path = os.path.join(repo, ".gitignore")
-    line = BACKUP_DIRNAME + "/"
+    """Keep the backups tree and machine-local link state out of the repo's git
+    history (idempotent — only appends lines that are missing)."""
+    path = os.path.join(repo, GITIGNORE_NAME)
     existing = ""
     if os.path.exists(path):
         with open(path) as f:
             existing = f.read()
-        if line in existing.split():
-            return
+    present = set(existing.split())
+    missing = [ln for ln in GITIGNORE_LINES if ln not in present]
+    if not missing:
+        return
     ensure_parent(path)
     with open(path, "a") as f:
         if existing and not existing.endswith("\n"):
             f.write("\n")
-        f.write(line + "\n")
+        for ln in missing:
+            f.write(ln + "\n")
 
 
 def link_status(entry):
@@ -473,41 +566,49 @@ def link_survey(manifest):
     return [(e, link_status(e)) for e in manifest["entries"]]
 
 
+def _link_one(entry, home, backups):
+    """Back up a real original and symlink the repo copy over it, mutating the
+    entry's link state. Returns ("linked", home_path) or ("skipped", (path,
+    reason)). Atomic: a failed symlink restores any just-made backup."""
+    home_path, repo_path = entry["home_path"], entry["repo_path"]
+    status = link_status(entry)
+    if status not in ("link", "link-missing"):
+        return "skipped", (home_path, status)
+    bpath = ""
+    try:
+        bpath = backup(home_path, backups, home) if status == "link" else ""
+        safe_symlink(repo_path, home_path)
+    except (FsError, OSError) as e:
+        if bpath:
+            with contextlib.suppress(FsError, OSError):
+                restore(bpath, home_path)
+        return "skipped", (home_path, f"error: {e}")
+    entry["linked"] = True
+    entry["backup_path"] = bpath
+    return "linked", home_path
+
+
 def link_apply(manifest, home, conf_home, should_link=None):
     """Back up + symlink every actionable entry; record link state in the
-    manifest. Idempotent — already-linked entries are left untouched. When
-    `should_link` is given (used by `sync`), entries it rejects are skipped as
-    "not-installed" while still kept in the saved manifest."""
+    (git-ignored) link-state file. Idempotent — already-linked entries are left
+    untouched. When `should_link` is given (used by `sync`), entries it rejects
+    are skipped as "not-installed"."""
     ensure_repo_gitignore(repo_root(conf_home))
     backups = backups_root(conf_home)
     linked, skipped = [], []
+    changed = False
     for entry in manifest["entries"]:
-        home_path, repo_path = entry["home_path"], entry["repo_path"]
         if should_link is not None and not should_link(entry):
-            skipped.append((home_path, "not-installed"))
+            skipped.append((entry["home_path"], "not-installed"))
             continue
-        status = link_status(entry)
-        if status not in ("link", "link-missing"):
-            skipped.append((home_path, status))
-            continue
-        bpath = ""
-        try:
-            bpath = backup(home_path, backups, home) if status == "link" else ""
-            safe_symlink(repo_path, home_path)
-        except (FsError, OSError) as e:
-            # Keep the step atomic: if the original was already moved aside but
-            # the symlink failed, put it back. Otherwise it would sit orphaned
-            # in the backups tree with nothing in the manifest to restore it.
-            if bpath:
-                with contextlib.suppress(FsError, OSError):
-                    restore(bpath, home_path)
-            skipped.append((home_path, f"error: {e}"))
-            continue
-        entry["linked"] = True
-        entry["backup_path"] = bpath
-        linked.append(home_path)
-    if linked:
-        save_manifest(conf_home, manifest, home)
+        outcome, detail = _link_one(entry, home, backups)
+        if outcome == "linked":
+            linked.append(detail)
+            changed = True
+        else:
+            skipped.append(detail)
+    if changed:
+        save_link_state(conf_home, manifest, home)
     return {"linked": linked, "skipped": skipped}
 
 
@@ -529,9 +630,20 @@ def link_report(rows, home, applied=False):
 
 # --------------------------------------------------------------------------
 # Sync — deploy a repo (typically one cloned from another machine) onto this
-# host: for each adopted config, check its program is actually installed here,
-# then symlink the installed ones into place, reusing link's backup+symlink. The
+# host, reconciling the symlinks with what's installed: symlink the configs
+# whose program is present (reusing link's backup+symlink), and undo the symlink
+# for a program that is no longer installed but that config-sync had linked. The
 # read-only survey doubles as "what does this repo hold, and can I use it here?".
+
+# The action sync would take for one entry -> (label, note). Installed entries
+# reuse the LINK_STATUS actions; a missing program is either unlinked (if we made
+# the symlink) or left alone.
+SYNC_STATUS = {
+    **LINK_STATUS,
+    "unlink": ("UNLINK", "program not installed — remove the symlink config-sync made"),
+}
+_SYNC_ACTIONABLE = ("link", "link-missing", "unlink")
+
 
 def program_installed(entry, qq, cfg):
     """Whether the entry's program is available on this machine. An unattributed
@@ -540,19 +652,49 @@ def program_installed(entry, qq, cfg):
     return check_installed(program, qq, cfg) if program else True
 
 
+def sync_action(entry, installed):
+    """What sync would do to one entry. Installed -> its link_status; missing ->
+    "unlink" when config-sync created the current symlink, else "not-installed"."""
+    if installed:
+        return link_status(entry)
+    return "unlink" if unlink_status(entry) in ("restore", "unlink-only") \
+        else "not-installed"
+
+
 def sync_survey(manifest, qq, cfg):
-    """Per entry: (entry, installed, link_status). link_status re-reads the
-    filesystem, so a freshly cloned repo reports what would actually happen."""
-    return [(e, program_installed(e, qq, cfg), link_status(e))
+    """Per entry: (entry, installed, action). Re-reads the filesystem, so a
+    freshly cloned repo reports what would actually happen."""
+    return [(e, program_installed(e, qq, cfg),
+             sync_action(e, program_installed(e, qq, cfg)))
             for e in manifest["entries"]]
 
 
 def sync_apply(manifest, home, conf_home, qq, cfg, force=False):
-    """Symlink every installed, actionable entry into place (backing up any
-    original first), exactly as `link`. Entries whose program is missing here are
-    skipped as "not-installed" unless `force`, but stay in the manifest."""
-    should_link = None if force else lambda e: program_installed(e, qq, cfg)
-    return link_apply(manifest, home, conf_home, should_link=should_link)
+    """Reconcile symlinks with what's installed: link installed configs (backing
+    up any original), and undo the symlink of a config whose program is gone but
+    that config-sync had linked. `force` links everything regardless. Link state
+    is persisted to the git-ignored link-state file, never the shared manifest."""
+    ensure_repo_gitignore(repo_root(conf_home))
+    backups = backups_root(conf_home)
+    linked, unlinked, skipped = [], [], []
+    changed = False
+    for entry in manifest["entries"]:
+        if force or program_installed(entry, qq, cfg):
+            outcome, detail = _link_one(entry, home, backups)
+            (linked if outcome == "linked" else skipped).append(detail)
+            changed = changed or outcome == "linked"
+        else:
+            # Program not installed here: undo a symlink config-sync created,
+            # otherwise leave the entry alone.
+            outcome, detail = _unlink_one(entry, home)
+            if outcome == "restored":
+                unlinked.append(detail)
+                changed = True
+            else:
+                skipped.append((entry["home_path"], "not-installed"))
+    if changed:
+        save_link_state(conf_home, manifest, home)
+    return {"linked": linked, "unlinked": unlinked, "skipped": skipped}
 
 
 def sync_report(rows, home):
@@ -561,21 +703,18 @@ def sync_report(rows, home):
         print("  nothing to sync — the repo holds no adopted configs.")
         return
     width = max(len(tilde(e["home_path"], home)) for e, _, _ in rows)
-    to_link = 0
-    for entry, installed, status in rows:
-        if not installed:
-            label, note = LINK_STATUS["not-installed"]
-        else:
-            label, note = LINK_STATUS[status]
-            if status in ("link", "link-missing"):
-                to_link += 1
+    todo = 0
+    for entry, _installed, action in rows:
+        label, note = SYNC_STATUS[action]
+        if action in _SYNC_ACTIONABLE:
+            todo += 1
         home_disp = tilde(entry["home_path"], home)
         prog = entry["program"] or "—"
-        print(f"  {label:<5} {home_disp:<{width}}  [{prog}]"
+        print(f"  {label:<6} {home_disp:<{width}}  [{prog}]"
               + (f"   ({note})" if note else ""))
     print()
-    print(f"{to_link} to link · run with --apply to create the symlinks."
-          if to_link else "Nothing to link.")
+    print(f"{todo} change(s) · run with --apply to reconcile the symlinks."
+          if todo else "Nothing to do — already in sync.")
 
 
 # --------------------------------------------------------------------------
@@ -607,28 +746,39 @@ def unlink_survey(manifest):
     return [(e, unlink_status(e)) for e in manifest["entries"]]
 
 
+def _unlink_one(entry, home):
+    """Remove the symlink config-sync created and restore its backup, mutating
+    the entry's link state. Returns ("restored", home_path) or ("skipped",
+    (path, reason))."""
+    home_path = entry["home_path"]
+    status = unlink_status(entry)
+    if status not in ("restore", "unlink-only"):
+        return "skipped", (home_path, status)
+    try:
+        remove_symlink(home_path)
+        if status == "restore":
+            restore(entry["backup_path"], home_path)
+    except (FsError, OSError) as e:
+        return "skipped", (home_path, f"error: {e}")
+    entry["linked"] = False
+    entry["backup_path"] = ""
+    return "restored", home_path
+
+
 def unlink_apply(manifest, home, conf_home):
     """Remove each symlink config-sync created and restore its backup, clearing
     link state. Idempotent — entries that are not linked are left untouched."""
     restored, skipped = [], []
+    changed = False
     for entry in manifest["entries"]:
-        status = unlink_status(entry)
-        home_path = entry["home_path"]
-        if status not in ("restore", "unlink-only"):
-            skipped.append((home_path, status))
-            continue
-        try:
-            remove_symlink(home_path)
-            if status == "restore":
-                restore(entry["backup_path"], home_path)
-        except (FsError, OSError) as e:
-            skipped.append((home_path, f"error: {e}"))
-            continue
-        entry["linked"] = False
-        entry["backup_path"] = ""
-        restored.append(home_path)
-    if restored:
-        save_manifest(conf_home, manifest, home)
+        outcome, detail = _unlink_one(entry, home)
+        if outcome == "restored":
+            restored.append(detail)
+            changed = True
+        else:
+            skipped.append(detail)
+    if changed:
+        save_link_state(conf_home, manifest, home)
     return {"restored": restored, "skipped": skipped}
 
 

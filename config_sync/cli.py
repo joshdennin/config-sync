@@ -11,8 +11,9 @@ adopt  — write an editable plan of discovered configs (curated/extended/
 link   — report (and with --apply, perform) symlinking of adopted configs from
          the repo back into place, backing up each original first
 sync   — deploy a repo (typically cloned from another machine): report (and with
-         --apply, perform) symlinking of the adopted configs whose program is
-         installed here; skips the rest unless --force
+         --apply, perform) reconciling the symlinks with what's installed —
+         symlink the configs whose program is present, and remove the symlink of
+         one whose program is gone (restoring the original); --force links all
 unlink — reverse `link`: report (and with --apply, perform) removing the
          symlinks and restoring the backed-up originals
 
@@ -67,12 +68,13 @@ from .inventory import (ConfigSyncError, build_inventory, config_home,
                         default_config_path, die, load_config, load_pacman_qq,
                         repo_config_path, repo_root, require_home, tilde)
 from .report import REPORTERS
-from .sync import (ADOPT_TIERS, LINK_STATUS, UNLINK_STATUS, adopt_apply,
-                   adopt_candidates, adopt_plan_rows, default_plan_path,
-                   ensure_repo_scaffold, link_apply, link_report, link_survey,
-                   load_adopt_plan, load_manifest, omitted_programs, sync_apply,
-                   sync_report, sync_survey, tidy_move, tidy_report, tidy_survey,
-                   unlink_apply, unlink_report, unlink_survey, write_adopt_plan)
+from .sync import (ADOPT_TIERS, LINK_STATUS, SYNC_STATUS, UNLINK_STATUS,
+                   adopt_apply, adopt_candidates, adopt_plan_rows,
+                   default_plan_path, ensure_repo_scaffold, link_apply,
+                   link_report, link_survey, load_adopt_plan, load_manifest,
+                   omitted_programs, sync_apply, sync_report, sync_survey,
+                   tidy_move, tidy_report, tidy_survey, unlink_apply,
+                   unlink_report, unlink_survey, write_adopt_plan)
 
 
 def cmd_scan(args):
@@ -206,11 +208,13 @@ def cmd_sync(args):
         result = sync_apply(manifest, home, conf, qq, cfg, force=args.force)
         for p in result["linked"]:
             print(f"  linked {tilde(p, home)}")
+        for p in result["unlinked"]:
+            print(f"  unlinked {tilde(p, home)} (program no longer installed)")
         for p, status in result["skipped"]:
             print(f"  skipped {tilde(p, home)} "
-                  f"({LINK_STATUS.get(status, ('', status))[1] or status})")
-        if not result["linked"]:
-            print("Nothing to link.")
+                  f"({SYNC_STATUS.get(status, ('', status))[1] or status})")
+        if not result["linked"] and not result["unlinked"]:
+            print("Nothing to do — already in sync.")
     else:
         sync_report(sync_survey(manifest, qq, cfg), home)
     return 0
@@ -286,8 +290,8 @@ def parse_args(argv):
 
     sy = sub.add_parser("sync",
                         help="deploy a repo (e.g. cloned from another machine): "
-                             "symlink the adopted configs whose program is "
-                             "installed here")
+                             "symlink the configs whose program is installed "
+                             "here, and unlink any whose program is now gone")
     sy.add_argument("--apply", action="store_true",
                     help="create the symlinks (default: report the plan only)")
     sy.add_argument("--force", action="store_true",

@@ -34,7 +34,7 @@ equivalent.
 | `tidy` | Relocate a safe set of `$HOME` config files into `~/.config`. | only with `--move` |
 | `adopt` | Write an editable plan, then copy chosen configs into a managed repo. | only with `--apply` |
 | `link` | Back up each home original and symlink it to the repo copy. | only with `--apply` |
-| `sync` | Deploy a repo (e.g. cloned from another machine): symlink the configs whose program is installed here. | only with `--apply` |
+| `sync` | Deploy a repo (e.g. cloned from another machine): symlink the configs whose program is installed here, and unlink any whose program is gone. | only with `--apply` |
 | `unlink` | Remove the symlinks and restore the backed-up originals. | only with `--apply` |
 
 Run `config-sync <command> --help` for the full flag set.
@@ -100,10 +100,15 @@ config-sync sync            # preview: which configs' programs are installed her
 config-sync sync --apply    # symlink the installed ones (missing programs skipped)
 ```
 
-`sync` checks each config's program against the local system and links only what
-you can actually use, reporting the rest. Pass `sync --force` to link everything
-regardless. Once linked, a later `git -C ~/.config/config-sync pull` updates
-every config in place, since they're symlinks into the repo.
+`sync` reconciles the symlinks with what's installed: it links the configs whose
+program is present, and removes the symlink of one whose program is gone
+(restoring the original). Pass `sync --force` to link everything regardless.
+
+The repo stays clean across all of this: `manifest.toml` holds only the portable
+home ⇄ repo mapping, while machine-local link state lives in a git-ignored
+`.link-state.toml`. So deploying on one machine never dirties the shared repo,
+and a later `git -C ~/.config/config-sync pull` updates every config in place
+(they're symlinks into the repo) without conflicts.
 
 To protect a shared repo, `adopt --apply` **refuses to copy local configs into a
 repo that already holds adopted content** (one you cloned, or already built).
@@ -142,8 +147,10 @@ captured copies are never overwritten.
   (protecting a shared/cloned repo) unless given `--force`.
 - `link` backs up before it symlinks and is atomic — a failed link restores the
   original rather than leaving it stranded. `sync` links only configs whose
-  program is installed locally. `unlink` only touches a symlink config-sync
-  created, leaving anything you've since replaced by hand alone.
+  program is installed locally, and when it removes a symlink for an
+  uninstalled program it only touches one config-sync itself created. `unlink`
+  likewise only touches a symlink config-sync created, leaving anything you've
+  since replaced by hand alone.
 
 ## More
 

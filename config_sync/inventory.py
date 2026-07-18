@@ -109,10 +109,12 @@ def config_home(home):
 # --------------------------------------------------------------------------
 # Configuration (required TOML — the source of truth for the tables above)
 
+CONFIG_NAME = "inventory-config.toml"  # the classification config, shipped and captured
+
+
 def default_config_path():
     """The inventory-config.toml shipped alongside this script."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "inventory-config.toml")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_NAME)
 
 
 def _table(cfg, name):
@@ -667,7 +669,7 @@ def repo_config_path(conf_home):
     """The classification config captured inside the managed repo. `adopt` writes
     it there so a clone carries the registry it was built with; repo-centric
     commands (`sync`) prefer it over the package copy."""
-    return os.path.join(repo_root(conf_home), "inventory-config.toml")
+    return os.path.join(repo_root(conf_home), CONFIG_NAME)
 
 
 def program_dirname(program, cfg):
