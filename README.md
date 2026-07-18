@@ -4,7 +4,9 @@ Inventory, health-check, and manage the config/dotfiles on an Arch / CachyOS
 system. `config-sync` answers *what config do I have, where, which program owns
 it, and is it under version control?* — and then, on request, builds a dotfiles
 repo from what it finds, symlinks that repo back into place, and can undo either
-step.
+step. The repo is designed to be **shared across machines**: push it from one
+box, clone it on another, and `sync` deploys the configs whose programs are
+actually installed there.
 
 Discovery is always **read-only**. Every mutation is opt-in, copies before it
 touches the original, and is reversible — no operation ever destroys the only
@@ -12,8 +14,9 @@ copy of anything.
 
 ## Install
 
-Requires Python 3.11+ and, for `scan` / `adopt`, `pacman` on `PATH` (used for
-package-ownership queries). The only third-party dependency is `tomli-w`.
+Requires Python 3.11+ and, for `scan` / `adopt` / `sync`, `pacman` on `PATH`
+(used for package-ownership and install queries). The only third-party
+dependency is `tomli-w`.
 
 ```sh
 pip install -e .
@@ -31,6 +34,7 @@ equivalent.
 | `tidy` | Relocate a safe set of `$HOME` config files into `~/.config`. | only with `--move` |
 | `adopt` | Write an editable plan, then copy chosen configs into a managed repo. | only with `--apply` |
 | `link` | Back up each home original and symlink it to the repo copy. | only with `--apply` |
+| `sync` | Deploy a repo (e.g. cloned from another machine): symlink the configs whose program is installed here. | only with `--apply` |
 | `unlink` | Remove the symlinks and restore the backed-up originals. | only with `--apply` |
 
 Run `config-sync <command> --help` for the full flag set.
@@ -52,16 +56,17 @@ config-sync health inventory.json
 config-sync tidy            # preview the safe relocations
 config-sync tidy --move     # perform them
 
-# 4. Plan a dotfiles repo from the strong-signal configs. This writes an
-#    editable plan file and copies nothing.
-config-sync adopt --select curated --plan config-sync-adopt.toml
+# 4. Plan a dotfiles repo from the strong-signal configs. This creates the
+#    repo directory, captures the classification config and an editable plan
+#    inside it, and copies nothing else. The plan defaults into the repo.
+config-sync adopt --select curated
 
 # 5. Edit the plan: set `adopt = false` on anything you want to skip.
-$EDITOR config-sync-adopt.toml
+$EDITOR ~/.config/config-sync/config-sync-adopt.toml
 
 # 6. Build the repo at ~/.config/config-sync/ from the edited plan
 #    (copies originals in, writes a manifest, git-commits).
-config-sync adopt --apply --plan config-sync-adopt.toml
+config-sync adopt --apply
 
 # 7. Deploy the repo back into place: each original is backed up, then
 #    replaced with a symlink into the repo.
@@ -75,8 +80,34 @@ config-sync unlink --apply
 
 After step 6 the managed repo lives at `~/.config/config-sync/`, grouped by
 program (`nvim/`, `tmux/`, `git/`, …), with a `manifest.toml` recording the
-home ⇄ repo mapping. After step 7, a re-`scan` shows the linked configs
-resolving into that repo.
+home ⇄ repo mapping and its own captured `inventory-config.toml`. After step 7,
+a re-`scan` shows the linked configs resolving into that repo.
+
+## Sharing across machines
+
+The repo built by `adopt` is a portable dotfiles repo — its `manifest.toml`
+stores machine-independent paths (`~/`-relative home, repo-relative repo), so it
+resolves against any `$HOME`.
+
+```sh
+# On the source machine: push the repo somewhere you can reach it.
+git -C ~/.config/config-sync remote add origin <git-url>
+git -C ~/.config/config-sync push -u origin main
+
+# On a new machine: clone it into place, then deploy.
+git clone <git-url> ~/.config/config-sync
+config-sync sync            # preview: which configs' programs are installed here?
+config-sync sync --apply    # symlink the installed ones (missing programs skipped)
+```
+
+`sync` checks each config's program against the local system and links only what
+you can actually use, reporting the rest. Pass `sync --force` to link everything
+regardless. Once linked, a later `git -C ~/.config/config-sync pull` updates
+every config in place, since they're symlinks into the repo.
+
+To protect a shared repo, `adopt --apply` **refuses to copy local configs into a
+repo that already holds adopted content** (one you cloned, or already built).
+Pass `adopt --apply --force` to add to it deliberately.
 
 ## Configuration
 
@@ -84,7 +115,13 @@ The classification tables — which programs exist, which files are shell startu
 files, which stores are secret, which names are machine-generated noise — live
 in `inventory-config.toml` (shipped with the package), not in the code. Teaching
 the tool a new program or secret store is a file edit. Point at your own copy
-with `scan --config PATH`. The tool never writes this file.
+with `scan --config PATH`.
+
+`adopt` captures a copy of this config inside the repo
+(`~/.config/config-sync/inventory-config.toml`) so a clone carries the registry
+it was built with. `scan` and `adopt` read the package copy; `sync` prefers the
+repo's captured copy so a freshly cloned repo classifies consistently. Existing
+captured copies are never overwritten.
 
 ## Safety
 
@@ -94,10 +131,19 @@ with `scan --config PATH`. The tool never writes this file.
   existing state; `adopt` copies (originals untouched) and `tidy --move` only
   relocates when the target is absent.
 - `adopt` never copies secrets (`.ssh`, `.gnupg`, `.aws`, …), dangling links,
-  generated/cache/state content, or the managed repo itself.
+  generated/cache/state content, or the managed repo itself. When it copies a
+  directory it strips `.git`, `.gitignore`, `.venv`, and `__pycache__`, so a
+  version-controlled config doesn't nest a repo and no virtualenv/bytecode noise
+  comes along.
+- Configs that are already their own git repo are surfaced in the plan flagged
+  `managed = true` with `adopt = false` — visible for review but opt-in, never
+  copied unless you turn `adopt` on.
+- `adopt --apply` refuses to add to a repo that already holds adopted content
+  (protecting a shared/cloned repo) unless given `--force`.
 - `link` backs up before it symlinks and is atomic — a failed link restores the
-  original rather than leaving it stranded. `unlink` only touches a symlink
-  config-sync created, leaving anything you've since replaced by hand alone.
+  original rather than leaving it stranded. `sync` links only configs whose
+  program is installed locally. `unlink` only touches a symlink config-sync
+  created, leaving anything you've since replaced by hand alone.
 
 ## More
 
