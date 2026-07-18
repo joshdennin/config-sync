@@ -21,13 +21,16 @@ def ensure_parent(path):
         os.makedirs(parent, exist_ok=True)
 
 
-def safe_copy(src, dst):
-    """Copy a file or directory tree src -> dst. Refuses if dst already exists."""
+def safe_copy(src, dst, ignore=()):
+    """Copy a file or directory tree src -> dst. Refuses if dst already exists.
+    `ignore` is a set of basename patterns dropped at every level of a directory
+    copy (e.g. a program's own .git, virtualenvs, bytecode caches)."""
     if os.path.lexists(dst):
         raise FsError(f"refusing to overwrite existing path: {dst}")
     ensure_parent(dst)
     if os.path.isdir(src) and not os.path.islink(src):
-        shutil.copytree(src, dst, symlinks=True)
+        ignore_fn = shutil.ignore_patterns(*ignore) if ignore else None
+        shutil.copytree(src, dst, symlinks=True, ignore=ignore_fn)
     else:
         shutil.copy2(src, dst, follow_symlinks=False)
     return dst

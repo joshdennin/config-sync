@@ -19,7 +19,7 @@ class AdoptCandidatesTest(unittest.TestCase):
             rec(program="tmux", category="terminal", relevance=80),
             rec(program="polybar", category="desktop", relevance=20, installed=False),
             rec(program="foo", category="misc", relevance=5),
-            rec(program="dots", relevance=90, is_git_repo=True),   # already versioned
+            rec(program="dots", relevance=10, is_git_repo=True),   # versioned, low score
             rec(program="ssh", relevance=60, flags=["secret"]),    # unsafe
         ]}
 
@@ -29,23 +29,27 @@ class AdoptCandidatesTest(unittest.TestCase):
         return {c["program"] for c in cands}
 
     def test_curated_is_strong_signal_only(self):
-        self.assertEqual(self.progs("curated"), {"neovim", "tmux"})
+        # dots scores below every floor but is versioned, so it surfaces anyway.
+        self.assertEqual(self.progs("curated"), {"neovim", "tmux", "dots"})
 
     def test_extended_adds_weaker_signals(self):
-        self.assertEqual(self.progs("extended"), {"neovim", "tmux", "polybar"})
+        self.assertEqual(self.progs("extended"),
+                         {"neovim", "tmux", "polybar", "dots"})
 
     def test_everything_includes_low_signal(self):
         self.assertEqual(self.progs("everything"),
-                         {"neovim", "tmux", "polybar", "foo"})
+                         {"neovim", "tmux", "polybar", "foo", "dots"})
 
-    def test_git_repos_and_secrets_never_included(self):
-        broadest = self.progs("everything")
-        self.assertNotIn("dots", broadest)  # already under version control
-        self.assertNotIn("ssh", broadest)   # secret (safety gate)
+    def test_git_repo_bypasses_the_relevance_floor(self):
+        # dots (relevance 10) is below the curated floor of 50 yet still included.
+        self.assertIn("dots", self.progs("curated"))
+
+    def test_secrets_are_never_included(self):
+        self.assertNotIn("ssh", self.progs("everything"))  # secret (safety gate)
 
     def test_include_and_exclude_match_program_or_category(self):
         self.assertEqual(self.progs("extended", include=["editor"]), {"neovim"})
-        self.assertEqual(self.progs("curated", exclude=["tmux"]), {"neovim"})
+        self.assertEqual(self.progs("curated", exclude=["tmux"]), {"neovim", "dots"})
 
 
 class AdoptPlanIOTest(unittest.TestCase):
@@ -59,15 +63,27 @@ class AdoptPlanIOTest(unittest.TestCase):
         rows = sync.adopt_plan_rows(
             [rec(program="tmux", category="Terminal multiplexers",
                  path="/h/.tmux.conf", rel=".tmux.conf", kind="file")],
-            cfg, "/h/.config", "/h")
-        sync.write_adopt_plan(self.path, rows, "curated")
+            cfg, "/h/.config")
+        sync.write_adopt_plan(self.path, rows, "curated", "~/.config/config-sync")
         data = sync.load_adopt_plan(self.path)
         self.assertEqual(data["tier"], "curated")
+        self.assertEqual(data["repo"], "~/.config/config-sync")  # repo root, once
         e = data["entries"][0]
         self.assertEqual(e["program"], "tmux")
-        self.assertEqual(e["paths"], ["~/.tmux.conf"])
-        self.assertEqual(e["repo_dir"], "~/.config/config-sync/tmux")
+        self.assertEqual(e["paths"], [{"home": "~/.tmux.conf",
+                                       "repo": "tmux/.tmux.conf"}])  # relative to repo
         self.assertTrue(e["adopt"])
+        self.assertFalse(e["managed"])  # a plain (non-versioned) config
+
+    def test_versioned_config_is_managed_and_not_adopted_by_default(self):
+        cfg = inventory.Config(programs={"neovim": {"paths": ["nvim"], "bin": "nvim"}})
+        rows = sync.adopt_plan_rows(
+            [rec(program="neovim", category="Editors", path="/h/.config/nvim",
+                 rel=".config/nvim", kind="dir", is_git_repo=True)],
+            cfg, "/h/.config")
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["managed"])   # flagged as already versioned
+        self.assertFalse(rows[0]["adopt"])    # opt-in, not adopted by default
 
     def test_rows_group_by_program_and_order_by_category(self):
         # One entry per program; category order follows first appearance (health's
@@ -83,18 +99,38 @@ class AdoptPlanIOTest(unittest.TestCase):
             rec(program="bash", category="Shells", path="/h/.bash_profile",
                 rel=".bash_profile", kind="file"),
         ]
-        rows = sync.adopt_plan_rows(cands, cfg, "/h/.config", "/h")
+        rows = sync.adopt_plan_rows(cands, cfg, "/h/.config")
         self.assertEqual([r["program"] for r in rows], ["nvim", "bash"])
         bash = next(r for r in rows if r["program"] == "bash")
-        self.assertEqual(bash["paths"], ["~/.bash_profile", "~/.bashrc"])  # grouped, sorted
-        self.assertEqual(bash["repo_dir"], "~/.config/config-sync/bash")
+        self.assertEqual(bash["paths"], [  # grouped, sorted, repo path relative to root
+            {"home": "~/.bash_profile", "repo": "bash/.bash_profile"},
+            {"home": "~/.bashrc", "repo": "bash/.bashrc"}])
 
     def test_header_comment_guides_editing(self):
-        sync.write_adopt_plan(self.path, [], "everything")
+        sync.write_adopt_plan(self.path, [], "everything", "~/.config/config-sync")
         with open(self.path) as f:
             text = f.read()
         self.assertIn("# config-sync adopt plan", text)
         self.assertIn("adopt = false", text)  # the edit instruction
+
+    def test_omitted_programs_excludes_included_and_secrets(self):
+        inv = {"entries": [
+            rec(program="tmux"),                    # in the plan
+            rec(program="polybar"),                 # discovered, left out
+            rec(program="ssh", flags=["secret"]),   # secret — never listed
+            rec(program=None),                      # unattributed — no name
+        ]}
+        rows = [{"program": "tmux"}]
+        self.assertEqual(sync.omitted_programs(inv, rows), ["polybar"])
+
+    def test_omitted_programs_named_in_plan_comment(self):
+        inv = {"entries": [rec(program="polybar"), rec(program="Discord")]}
+        sync.write_adopt_plan(self.path, [], "curated", "~/.config/config-sync",
+                              sync.omitted_programs(inv, []))
+        with open(self.path) as f:
+            text = f.read()
+        self.assertIn("Not in this", text)
+        self.assertIn("Discord, polybar", text)  # sorted case-insensitively
 
     def test_missing_plan_is_hard_error(self):
         with self.assertRaises(inventory.ConfigSyncError):
@@ -120,11 +156,11 @@ class AdoptApplyTest(unittest.TestCase):
     def plan(self, *entries):
         return {"version": 1, "tier": "everything", "entries": list(entries)}
 
-    def entry(self, program, *paths, adopt=True):
-        # kind is derived from the filesystem at apply time, so the plan carries
-        # only the home paths grouped under their program.
-        return {"program": program, "category": "", "repo_dir": "",
-                "paths": list(paths), "adopt": adopt}
+    def entry(self, program, *homes, adopt=True):
+        # kind is derived from the filesystem at apply time; repo is display-only
+        # (recomputed on apply), so the tests leave it blank.
+        return {"program": program, "category": "", "adopt": adopt,
+                "paths": [{"home": h, "repo": ""} for h in homes]}
 
     def repo(self, *parts):
         return os.path.join(self.conf, "config-sync", *parts)
@@ -140,6 +176,23 @@ class AdoptApplyTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(self.home, ".config/ghostty/config")))
         self.assertEqual(set(result["copied"]), {"~/.config/ghostty", "~/.tmux.conf"})
         self.assertEqual(len(sync.load_manifest(self.conf)["entries"]), 2)
+
+    def test_apply_strips_git_venv_and_pycache_from_dir_copies(self):
+        base = os.path.join(self.home, ".config/ghostty")
+        os.makedirs(os.path.join(base, ".git"))
+        os.makedirs(os.path.join(base, ".venv/bin"))
+        os.makedirs(os.path.join(base, "themes/__pycache__"))  # nested cache
+        for rel in (".git/HEAD", ".gitignore", ".venv/bin/activate",
+                    "themes/__pycache__/x.pyc", "themes/dark.conf"):
+            with open(os.path.join(base, rel), "w") as f:
+                f.write("x\n")
+        sync.adopt_apply(self.plan(self.entry("ghostty", "~/.config/ghostty")),
+                         self.home, self.conf, self.cfg)
+        self.assertTrue(os.path.isfile(self.repo("ghostty/config")))       # real config kept
+        self.assertTrue(os.path.isfile(self.repo("ghostty/themes/dark.conf")))
+        for stripped in (".git", ".gitignore", ".venv", "themes/__pycache__"):
+            self.assertFalse(os.path.exists(self.repo("ghostty", stripped)),
+                             f"{stripped} should not be copied into the repo")
 
     def test_adopt_false_entries_are_skipped(self):
         result = sync.adopt_apply(

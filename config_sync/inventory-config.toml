@@ -63,7 +63,7 @@ mako       = { paths = ["mako"], category = "Notification daemons" }
 xorg       = { paths = [".xinitrc", ".xprofile", ".Xresources", ".Xdefaults"], pkgs = ["xorg-server"], bin = "Xorg", category = "Display servers" }
 # GTK: track the hand-edited files, not the whole dir (which also holds
 # file-chooser bookmarks and DE-written state). Parents hidden via [noise].config.
-gtk        = { paths = ["gtk-3.0/settings.ini", "gtk-3.0/gtk.css", "gtk-4.0/settings.ini", "gtk-4.0/gtk.css", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], bin = "gtk-launch", category = "GUI toolkits" }
+gtk-launch = { paths = ["gtk-3.0/settings.ini", "gtk-3.0/gtk.css", "gtk-4.0/settings.ini", "gtk-4.0/gtk.css", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], category = "GUI toolkits" }
 qt         = { paths = ["qt5ct", "qt6ct"], pkgs = ["qt5ct", "qt6ct"], bin = "qt6ct", category = "GUI toolkits" }
 fontconfig = { paths = ["fontconfig"], bin = "fc-list", category = "Fonts" }
 # Media & viewers

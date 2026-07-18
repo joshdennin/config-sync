@@ -8,6 +8,7 @@ overwrite/delete guarantees hold uniformly.
 import contextlib
 import os
 import subprocess
+import textwrap
 import tomllib
 from datetime import datetime
 
@@ -171,6 +172,12 @@ def tidy_move(rows):
 ADOPT_TIERS = {"curated": 50, "extended": 15, "everything": 0}
 ADOPT_PLAN_VERSION = 1
 
+# Basenames never copied into the repo when adopting a directory (matched at
+# every level of the tree). A managed config's own git metadata is stripped so
+# the repo does not swallow a nested repo; virtualenvs and bytecode caches are
+# bulky and regenerable, so they are dropped for every program.
+ADOPT_IGNORE = ("__pycache__", ".venv", ".git", ".gitignore")
+
 
 def _adopt_match(rec, names):
     """True if the entry's program or category is named."""
@@ -179,14 +186,16 @@ def _adopt_match(rec, names):
 
 def adopt_candidates(inv, tier, include, exclude, conf_home):
     """Entries eligible for the plan at `tier`, after include/exclude. Applies
-    the safety gate, the tier's relevance floor, and adopt policy (skip anything
-    already under version control — it is managed elsewhere)."""
+    the safety gate and the tier's relevance floor. A config that is already its
+    own git repo is a strong, explicit signal, so it bypasses the floor and
+    surfaces in every tier — flagged `managed` with `adopt` defaulted off (see
+    adopt_plan_rows), for the user to opt in rather than adopt by default."""
     floor = ADOPT_TIERS[tier]
     out = []
     for rec in inv["entries"]:
-        if not is_adoptable(rec, conf_home) or rec["is_git_repo"]:
+        if not is_adoptable(rec, conf_home):
             continue
-        if (rec["relevance"] or 0) < floor:
+        if not rec["is_git_repo"] and (rec["relevance"] or 0) < floor:
             continue
         if include and not _adopt_match(rec, include):
             continue
@@ -196,39 +205,75 @@ def adopt_candidates(inv, tier, include, exclude, conf_home):
     return out
 
 
-def adopt_plan_rows(cands, cfg, conf_home, home):
+def adopt_plan_rows(cands, cfg, conf_home):
     """Group adopt candidates into one plan entry per program, each listing every
-    home path it owns and the single repo directory they are mirrored under.
+    path it owns as a {home, repo} pair — where the file lives now and where it
+    lands, relative to the repo root (recorded as `repo` at the top of the plan).
     Unattributed entries key on their own path so distinct files never merge.
     Ordered by category — health's category order — then program name, so the
     plan is stable and reads like the health report."""
+    root = repo_root(conf_home)
     groups = {}  # group key -> plan entry
     for rec in cands:
         program = rec["program"] or None
         key = program or rec["path"]
         g = groups.get(key)
         if g is None:
-            repo_dir = repo_path_for(rec["path"], "dir", program, cfg, conf_home)
             g = {"program": rec["program"] or "",
                  "category": rec["category"] or UNCATEGORIZED,
-                 "repo_dir": tilde(repo_dir, home), "paths": [], "adopt": True}
+                 "adopt": True, "managed": False, "paths": []}
             groups[key] = g
-        g["paths"].append(display_path(rec))
+        if rec["is_git_repo"]:
+            # A versioned config: mark it managed and default adopt off, so it is
+            # surfaced for review but not copied unless the user opts in.
+            g["managed"] = True
+            g["adopt"] = False
+        repo_path = repo_path_for(rec["path"], rec["kind"], program, cfg, conf_home)
+        g["paths"].append({"home": display_path(rec),
+                           "repo": os.path.relpath(repo_path, root)})
     cat_rank = {c: i for i, c in enumerate(ordered_categories(cands))}
     rows = sorted(groups.values(),
                   key=lambda g: (cat_rank.get(g["category"], 0), g["program"].lower()))
     for g in rows:
-        g["paths"].sort()
+        g["paths"].sort(key=lambda p: p["home"])
     return rows
 
 
-def write_adopt_plan(path, rows, tier):
+def omitted_programs(inv, rows):
+    """Attributed programs found in the scan but left out of the plan — listed in
+    a comment so nothing drops silently. Secrets are excluded (never adoptable,
+    and not worth advertising); [exclude] entries never enter the inventory, so
+    they are already absent. Unattributed entries have no name to show."""
+    included = {r["program"] for r in rows if r["program"]}
+    omitted = {rec["program"] for rec in inv["entries"]
+               if rec.get("program") and rec["program"] not in included
+               and "secret" not in (rec.get("flags") or ())}
+    return sorted(omitted, key=str.lower)
+
+
+def _omitted_comment(omitted, tier):
+    """Comment block naming the omitted programs, or "" when there are none."""
+    if not omitted:
+        return ""
+    intro = (f'# Not in this "{tier}" plan — discovered but below the tier\'s\n'
+             "# relevance floor or not adoptable. Add any by hand if you want them\n"
+             "# (secrets and [exclude] entries are intentionally not listed):\n")
+    body = textwrap.fill(", ".join(omitted), width=76,
+                         initial_indent="#   ", subsequent_indent="#   ")
+    return intro + body + "\n"
+
+
+def write_adopt_plan(path, rows, tier, repo, omitted=()):
     header = (f'# config-sync adopt plan — "{tier}" tier, {datetime.now():%Y-%m-%d}\n'
               "# Edit before applying: set adopt = false (or remove a path, or\n"
               "# delete a block) to skip it. Each entry is one program; paths lists\n"
-              "# every file/dir it owns, repo_dir is where they land in the repo.\n"
-              f"# Then run:  config-sync adopt --apply --plan {path}\n\n")
-    data = {"version": ADOPT_PLAN_VERSION, "tier": tier, "entries": rows}
+              "# every file/dir it owns as { home = where it lives now, repo = its\n"
+              "# path inside the repo (below) }. managed = true marks a config that\n"
+              "# is already its own git repo; adopt is off for those by default —\n"
+              "# set adopt = true to copy it in anyway.\n"
+              f"# Then run:  config-sync adopt --apply --plan {path}\n"
+              + _omitted_comment(omitted, tier) + "\n")
+    data = {"version": ADOPT_PLAN_VERSION, "tier": tier, "repo": repo, "entries": rows}
     with open(path, "wb") as f:
         f.write(header.encode())
         tomli_w.dump(data, f)
@@ -273,7 +318,8 @@ def adopt_apply(plan, home, conf_home, cfg):
         if not entry.get("adopt", False):
             continue
         program = entry.get("program") or None
-        for disp in entry.get("paths", []):
+        for p in entry.get("paths", []):
+            disp = p["home"]
             home_path = expand_home(disp, home)
             # kind is read from the filesystem at apply time (the plan no longer
             # stores it) so it always matches what is actually on disk now.
@@ -283,7 +329,7 @@ def adopt_apply(plan, home, conf_home, cfg):
                 skipped.append(disp)
                 continue
             try:
-                safe_copy(home_path, repo_path)
+                safe_copy(home_path, repo_path, ignore=ADOPT_IGNORE)
             except (FsError, OSError) as e:
                 skipped.append(f"{disp} ({e})")
                 continue

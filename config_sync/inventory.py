@@ -680,12 +680,12 @@ def repo_path_for(home_path, kind, program, cfg, conf_home):
 
 def _repo_leaf(home_path, program, cfg):
     """The file's location *within* its program dir. A plain file lands at its
-    basename; a registered sub-path keeps its directory structure so two files
-    sharing a basename in different sub-dirs (e.g. gtk-3.0/settings.ini and
-    gtk-4.0/settings.ini) map to gtk-3.0/ and gtk-4.0/ rather than colliding.
-    The leading component is dropped when every sub-path of the program shares
-    it — there it merely duplicates the program dir (.claude/settings.json is
-    stored as settings.json, not .claude/settings.json)."""
+    basename, and a registered sub-path is flattened to its basename too so it
+    sits directly under the program dir like every other file. Structure is kept
+    only when flattening would collide: a leading dir shared by all of the
+    program's sub-paths is dropped (.claude/settings.json -> settings.json), and
+    a full sub-path is preserved only when two sub-paths share a basename in
+    different dirs (gtk-3.0/settings.ini and gtk-4.0/settings.ini)."""
     subpaths = [p for p in cfg.programs.get(program, {}).get("paths", ())
                 if os.sep in p] if program else []
     match = max((p for p in subpaths if home_path.endswith(os.sep + p)),
@@ -694,6 +694,9 @@ def _repo_leaf(home_path, program, cfg):
         return os.path.basename(home_path)
     if len({p.split(os.sep, 1)[0] for p in subpaths}) == 1:
         return match.split(os.sep, 1)[1]  # shared leading dir duplicates prog dir
-    return match
+    basenames = [os.path.basename(p) for p in subpaths]
+    if len(basenames) == len(set(basenames)):
+        return os.path.basename(match)  # unique basenames -> flat, no collision
+    return match  # keep the full sub-path to disambiguate a basename collision
 
 

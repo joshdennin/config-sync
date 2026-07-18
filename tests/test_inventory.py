@@ -267,11 +267,11 @@ class RepoMappingTest(unittest.TestCase):
         # gtk-3.0/settings.ini and gtk-4.0/settings.ini share a basename; keeping
         # the leading dir (not shared across the program's sub-paths) is what
         # stops them from colliding on a single gtk/settings.ini.
-        cfg = inventory.Config(programs={"gtk": {"paths": [
+        cfg = inventory.Config(programs={"gtk-launch": {"paths": [
             "gtk-3.0/settings.ini", "gtk-3.0/gtk.css",
-            "gtk-4.0/settings.ini", "gtk-4.0/gtk.css"], "bin": "gtk-launch"}})
+            "gtk-4.0/settings.ini", "gtk-4.0/gtk.css"]}})
         for sub in ("gtk-3.0/settings.ini", "gtk-4.0/settings.ini"):
-            got = inventory.repo_path_for("/h/.config/" + sub, "file", "gtk",
+            got = inventory.repo_path_for("/h/.config/" + sub, "file", "gtk-launch",
                                           cfg, self.conf)
             self.assertEqual(got, os.path.join(self.root, "gtk-launch", sub))
 
@@ -283,6 +283,20 @@ class RepoMappingTest(unittest.TestCase):
         got = inventory.repo_path_for("/h/.claude/settings.json", "file",
                                       "claude", cfg, self.conf)
         self.assertEqual(got, os.path.join(self.root, "claude", "settings.json"))
+
+    def test_distinct_dir_subpaths_flatten_to_basename_when_unique(self):
+        # winboat's sub-paths live in different dirs but their basenames are
+        # unique, so each flattens to its basename under the program dir rather
+        # than keeping the nested structure: config.json, winboat.config.json.
+        cfg = inventory.Config(programs={"winboat": {"paths": [
+            "winboat/config.json", ".winboat/winboat.config.json"],
+            "bin": "winboat"}})
+        want = {"winboat/config.json": "config.json",
+                ".winboat/winboat.config.json": "winboat.config.json"}
+        for sub, leaf in want.items():
+            got = inventory.repo_path_for("/h/.config/" + sub, "file", "winboat",
+                                          cfg, self.conf)
+            self.assertEqual(got, os.path.join(self.root, "winboat", leaf))
 
 
 
