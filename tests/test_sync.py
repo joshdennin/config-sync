@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import shutil
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -151,7 +152,9 @@ class AdoptApplyTest(unittest.TestCase):
         with open(os.path.join(self.home, ".tmux.conf"), "w") as f:
             f.write("set -g mouse on\n")
         self.cfg = inventory.load_config(inventory.default_config_path())
-        p = mock.patch.object(sync, "git_init_commit", lambda repo, msg: True)
+        # adopt_apply's only git action is `git init`; stub it so tests stay
+        # hermetic (no real repo created) and fast.
+        p = mock.patch.object(sync, "git_init", lambda repo: True)
         p.start()
         self.addCleanup(p.stop)
 
@@ -232,6 +235,23 @@ class AdoptApplyTest(unittest.TestCase):
 
     def repo_dir(self):
         return os.path.join(self.conf, "config-sync")
+
+
+@unittest.skipUnless(shutil.which("git"), "git not on PATH")
+class GitInitTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = self.tmp.name
+
+    def test_inits_once_and_runs_no_other_git(self):
+        self.assertTrue(sync.git_init(self.repo))                 # fresh dir -> inited
+        self.assertTrue(os.path.isdir(os.path.join(self.repo, ".git")))
+        self.assertFalse(sync.git_init(self.repo))                # already a repo -> no-op
+        # nothing was committed — adopt only inits, never commits
+        head = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"],
+                              capture_output=True, text=True)
+        self.assertNotEqual(head.returncode, 0)                   # no HEAD -> no commit
 
 
 class LinkTest(unittest.TestCase):

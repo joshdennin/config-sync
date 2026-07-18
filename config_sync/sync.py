@@ -448,21 +448,23 @@ def expand_home(path, home):
     return os.path.join(home, path[2:]) if path.startswith("~/") else path
 
 
-def git_init_commit(repo, message):
-    """Best-effort init + add + commit for the freshly built repo. Commit can
-    fail (e.g. no git identity configured); that is reported, not fatal."""
-    for args in (["init", "-q"], ["add", "-A"]):
-        subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
-    r = subprocess.run(["git", "-C", repo, "commit", "-q", "-m", message],
-                       capture_output=True, text=True)
-    return r.returncode == 0
+def git_init(repo):
+    """`git init` the repo if it is not one already, so the user has a versionable
+    dotfiles repo. That is the only git config-sync runs — staging, committing,
+    pulling, and pushing are always left to the user. Returns whether it inited."""
+    if os.path.isdir(os.path.join(repo, GIT_DIR)):
+        return False
+    subprocess.run(["git", "-C", repo, "init", "-q"], capture_output=True, text=True)
+    return True
 
 
 def adopt_apply(plan, home, conf_home, cfg, force=False):
-    """Copy the plan's adopt=true entries into the repo, merge the manifest, and
-    commit. Re-runnable: entries already recorded or already present are skipped.
-    Refuses to add to a repo that already holds adopted configs (e.g. one cloned
-    from another machine) unless `force`, so a shared repo is not polluted."""
+    """Copy the plan's adopt=true entries into the repo and merge the manifest.
+    Re-runnable: entries already recorded or already present are skipped. The only
+    git it runs is `git init` on a not-yet-versioned repo — staging, committing,
+    and pushing are left to the user. Refuses to add to a repo that already holds
+    adopted configs (e.g. one cloned from another machine) unless `force`, so a
+    shared repo is not polluted."""
     repo = repo_root(conf_home)
     if repo_has_adopted_content(repo) and not force:
         die(f"{tilde(repo, home)} already holds adopted configs — refusing to "
@@ -495,13 +497,12 @@ def adopt_apply(plan, home, conf_home, cfg, force=False):
             manifest["entries"].append(manifest_entry(program, home_path, repo_path, kind))
             known.add(home_path)
             copied.append(disp)
-    committed = False
+    initialized = False
     if copied:
         save_manifest(conf_home, manifest, home)
-        ensure_repo_gitignore(repo_root(conf_home))  # keep backups out of git
-        committed = git_init_commit(repo_root(conf_home),
-                                    f"adopt {len(copied)} config(s) via config-sync")
-    return {"copied": copied, "skipped": skipped, "committed": committed,
+        ensure_repo_gitignore(repo_root(conf_home))  # keep backups/state out of git
+        initialized = git_init(repo_root(conf_home))
+    return {"copied": copied, "skipped": skipped, "initialized": initialized,
             "repo": repo_root(conf_home)}
 
 

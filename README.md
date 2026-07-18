@@ -64,9 +64,11 @@ config-sync adopt --select curated
 # 5. Edit the plan: set `adopt = false` on anything you want to skip.
 $EDITOR ~/.config/config-sync/config-sync-adopt.toml
 
-# 6. Build the repo at ~/.config/config-sync/ from the edited plan
-#    (copies originals in, writes a manifest, git-commits).
+# 6. Build the repo at ~/.config/config-sync/ from the edited plan (copies
+#    originals in, writes a manifest, and `git init`s the repo). It never
+#    commits — review the result and commit yourself:
 config-sync adopt --apply
+git -C ~/.config/config-sync add -A && git commit -m 'adopt configs'
 
 # 7. Deploy the repo back into place: each original is backed up, then
 #    replaced with a symlink into the repo.
@@ -89,8 +91,12 @@ The repo built by `adopt` is a portable dotfiles repo — its `manifest.toml`
 stores machine-independent paths (`~/`-relative home, repo-relative repo), so it
 resolves against any `$HOME`.
 
+`adopt --apply` leaves you a `git init`'d repo but makes no commits — you own
+the git history:
+
 ```sh
-# On the source machine: push the repo somewhere you can reach it.
+# On the source machine: commit, then push the repo somewhere you can reach it.
+git -C ~/.config/config-sync add -A && git commit -m 'adopt configs'
 git -C ~/.config/config-sync remote add origin <git-url>
 git -C ~/.config/config-sync push -u origin main
 

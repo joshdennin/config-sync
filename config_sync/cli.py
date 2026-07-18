@@ -7,7 +7,8 @@ tidy   — report (and with --move, perform) safe XDG relocations of a
          conservative "Tier 1" set of HOME config files into ~/.config
 adopt  — write an editable plan of discovered configs (curated/extended/
          everything tier); with --apply, copy the plan's entries into the
-         managed repo at ~/.config/config-sync/, write the manifest, git commit
+         managed repo at ~/.config/config-sync/, write the manifest, and
+         `git init` the repo (staging/commit/push are left to you)
 link   — report (and with --apply, perform) symlinking of adopted configs from
          the repo back into place, backing up each original first
 sync   — deploy a repo (typically cloned from another machine): report (and with
@@ -120,11 +121,14 @@ def cmd_adopt(args):
         result = adopt_apply(load_adopt_plan(plan_path), home, conf, cfg,
                              force=args.force)
         if result["copied"]:
-            print(f"Adopted {len(result['copied'])} config(s) into {result['repo']}:")
+            repo = result["repo"]
+            print(f"Adopted {len(result['copied'])} config(s) into {repo}:")
             for p in result["copied"]:
                 print(f"  + {p}")
-            print("Committed." if result["committed"]
-                  else "  (git commit skipped — set git user.name/email, then commit by hand)")
+            if result["initialized"]:
+                print(f"Initialized a git repo at {tilde(repo, home)}.")
+            print("Review, then commit when ready:  "
+                  f"git -C {tilde(repo, home)} add -A && git commit -m 'adopt configs'")
         if result["skipped"]:
             print(f"Skipped {len(result['skipped'])} (already adopted or unavailable):")
             for p in result["skipped"]:
@@ -272,7 +276,7 @@ def parse_args(argv):
                         "(default: <repo>/config-sync-adopt.toml)")
     a.add_argument("--apply", action="store_true",
                    help="copy the plan's adopt=true entries into the repo, write "
-                        "the manifest, and git commit")
+                        "the manifest, and git-init the repo (you commit)")
     a.add_argument("--force", action="store_true",
                    help="adopt into a repo that already holds configs (e.g. one "
                         "cloned from another machine); off by default to protect "
