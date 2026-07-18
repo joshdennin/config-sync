@@ -9,7 +9,8 @@ import os
 from collections import Counter
 from datetime import datetime
 
-from .inventory import CAT_ORDER, Config, display_path, tilde
+from .inventory import (CAT_ORDER, UNCATEGORIZED, Config, display_path,
+                        ordered_categories, tilde)
 
 
 # --------------------------------------------------------------------------
@@ -188,9 +189,6 @@ def md_suggestion(text):
     return f"`{text}`" if text.startswith(_CMD_PREFIXES) else text
 
 
-UNCATEGORIZED = "Uncategorized"  # health group for programs with no category
-
-
 def render_health(inv, source, cfg=Config()):
     sections = {}  # section title -> records, in inventory order; unattributed last
     for rec in inv["entries"]:
@@ -217,8 +215,7 @@ def render_health(inv, source, cfg=Config()):
         if name != "unattributed":
             programs += 1
     # Uncategorized (and the unattributed section it holds) always sorts last.
-    ordered_cats = ([c for c in groups if c != UNCATEGORIZED]
-                    + ([UNCATEGORIZED] if UNCATEGORIZED in groups else []))
+    ordered_cats = [c for c in ordered_categories(inv["entries"]) if c in groups]
 
     meta = inv.get("meta", {})
     out = [

@@ -125,12 +125,12 @@ config = ["gh"]
 
 # --------------------------------------------------------------------------
 # State/cache dirs that masquerade as config → flagged "noise" and
-# deprioritized (still recorded, unlike [exclude].home which drops entirely).
+# deprioritized (still recorded, unlike [exclude] which drops entries entirely).
 # "home" matches home-dir basenames, "config" matches basenames under
 # ~/.config.
 
 [noise]
-home = [".vscode-oss", ".vscode-oss-shared", ".factorio", ".claude.json",
+home = [".vscode-oss", ".vscode-oss-shared", ".factorio",
         ".claude", ".gemini", ".winboat"]
 config = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
           "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",

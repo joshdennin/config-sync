@@ -1,4 +1,5 @@
 inventory.json
+health.md
 config-sync-adopt.toml
 __pycache__/
 *.pyc

@@ -59,7 +59,7 @@ from .inventory import (ConfigSyncError, build_inventory, config_home,
                         tilde)
 from .report import REPORTERS
 from .sync import (ADOPT_TIERS, LINK_STATUS, UNLINK_STATUS, adopt_apply,
-                   adopt_candidates, adopt_plan_row, link_apply, link_report,
+                   adopt_candidates, adopt_plan_rows, link_apply, link_report,
                    link_survey, load_adopt_plan, load_manifest, tidy_move,
                    tidy_report, tidy_survey, unlink_apply, unlink_report,
                    unlink_survey, write_adopt_plan)
@@ -124,10 +124,10 @@ def cmd_adopt(args):
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
     scan_ns = argparse.Namespace(all=False, root=[])
     inv = build_inventory(scan_ns, home, cfg)
-    rows = [adopt_plan_row(rec) for rec in
-            adopt_candidates(inv, args.select, args.include, args.exclude, conf)]
+    cands = adopt_candidates(inv, args.select, args.include, args.exclude, conf)
+    rows = adopt_plan_rows(cands, cfg, conf, home)
     write_adopt_plan(args.plan, rows, args.select)
-    print(f"Wrote {len(rows)} candidate(s) to {args.plan} ({args.select} tier).")
+    print(f"Wrote {len(rows)} program(s) to {args.plan} ({args.select} tier).")
     print(f"Edit the file, then run:  config-sync adopt --apply --plan {args.plan}")
     return 0
 

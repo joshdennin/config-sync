@@ -226,9 +226,14 @@ class AdoptableTest(unittest.TestCase):
         self.assertFalse(self.adoptable(editable=False))
         self.assertFalse(self.adoptable(editable=None, flags=["dangling"]))
 
-    def test_cache_and_state_excluded(self):
-        self.assertFalse(self.adoptable(location="cache", editable=True))
-        self.assertFalse(self.adoptable(location="state", editable=True))
+    def test_only_config_proper_locations_are_adoptable(self):
+        # data/state/cache dirs are program data, not hand-edited config — even
+        # when a registry hit forces editable=True (e.g. ~/.local/share/nvim
+        # matches the nvim registration). Only config/shell/home/unknown adopt.
+        for loc in ("config", "shell", "home", "unknown"):
+            self.assertTrue(self.adoptable(location=loc, editable=True), loc)
+        for loc in ("data", "state", "cache"):
+            self.assertFalse(self.adoptable(location=loc, editable=True), loc)
 
     def test_the_managed_repo_is_never_adopted(self):
         self.assertFalse(self.adoptable(path="/h/.config/config-sync"))

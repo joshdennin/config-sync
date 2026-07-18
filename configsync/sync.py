@@ -15,8 +15,8 @@ import tomli_w
 
 from .fsops import (FsError, backup, ensure_parent, remove_symlink, restore,
                     safe_copy, safe_move, safe_symlink)
-from .inventory import (die, display_path, is_adoptable, repo_path_for,
-                        repo_root, tilde)
+from .inventory import (UNCATEGORIZED, die, display_path, is_adoptable,
+                        ordered_categories, repo_path_for, repo_root, tilde)
 
 
 # --------------------------------------------------------------------------
@@ -196,15 +196,37 @@ def adopt_candidates(inv, tier, include, exclude, conf_home):
     return out
 
 
-def adopt_plan_row(rec):
-    return {"program": rec["program"] or "", "path": display_path(rec),
-            "kind": rec["kind"], "category": rec["category"] or "",
-            "relevance": rec["relevance"] or 0, "adopt": True}
+def adopt_plan_rows(cands, cfg, conf_home, home):
+    """Group adopt candidates into one plan entry per program, each listing every
+    home path it owns and the single repo directory they are mirrored under.
+    Unattributed entries key on their own path so distinct files never merge.
+    Ordered by category — health's category order — then program name, so the
+    plan is stable and reads like the health report."""
+    groups = {}  # group key -> plan entry
+    for rec in cands:
+        program = rec["program"] or None
+        key = program or rec["path"]
+        g = groups.get(key)
+        if g is None:
+            repo_dir = repo_path_for(rec["path"], "dir", program, cfg, conf_home)
+            g = {"program": rec["program"] or "",
+                 "category": rec["category"] or UNCATEGORIZED,
+                 "repo_dir": tilde(repo_dir, home), "paths": [], "adopt": True}
+            groups[key] = g
+        g["paths"].append(display_path(rec))
+    cat_rank = {c: i for i, c in enumerate(ordered_categories(cands))}
+    rows = sorted(groups.values(),
+                  key=lambda g: (cat_rank.get(g["category"], 0), g["program"].lower()))
+    for g in rows:
+        g["paths"].sort()
+    return rows
 
 
 def write_adopt_plan(path, rows, tier):
     header = (f'# config-sync adopt plan — "{tier}" tier, {datetime.now():%Y-%m-%d}\n'
-              "# Edit before applying: set adopt = false (or delete a block) to skip an entry.\n"
+              "# Edit before applying: set adopt = false (or remove a path, or\n"
+              "# delete a block) to skip it. Each entry is one program; paths lists\n"
+              "# every file/dir it owns, repo_dir is where they land in the repo.\n"
               f"# Then run:  config-sync adopt --apply --plan {path}\n\n")
     data = {"version": ADOPT_PLAN_VERSION, "tier": tier, "entries": rows}
     with open(path, "wb") as f:
@@ -247,23 +269,27 @@ def adopt_apply(plan, home, conf_home, cfg):
     manifest = load_manifest(conf_home)
     known = {e["home_path"] for e in manifest["entries"]}
     copied, skipped = [], []
-    for row in plan["entries"]:
-        if not row.get("adopt", False):
+    for entry in plan["entries"]:
+        if not entry.get("adopt", False):
             continue
-        home_path = expand_home(row["path"], home)
-        program = row["program"] or None
-        repo_path = repo_path_for(home_path, row["kind"], program, cfg, conf_home)
-        if home_path in known or os.path.lexists(repo_path):
-            skipped.append(row["path"])
-            continue
-        try:
-            safe_copy(home_path, repo_path)
-        except (FsError, OSError) as e:
-            skipped.append(f"{row['path']} ({e})")
-            continue
-        manifest["entries"].append(manifest_entry(program, home_path, repo_path, row["kind"]))
-        known.add(home_path)
-        copied.append(row["path"])
+        program = entry.get("program") or None
+        for disp in entry.get("paths", []):
+            home_path = expand_home(disp, home)
+            # kind is read from the filesystem at apply time (the plan no longer
+            # stores it) so it always matches what is actually on disk now.
+            kind = "dir" if os.path.isdir(home_path) else "file"
+            repo_path = repo_path_for(home_path, kind, program, cfg, conf_home)
+            if home_path in known or os.path.lexists(repo_path):
+                skipped.append(disp)
+                continue
+            try:
+                safe_copy(home_path, repo_path)
+            except (FsError, OSError) as e:
+                skipped.append(f"{disp} ({e})")
+                continue
+            manifest["entries"].append(manifest_entry(program, home_path, repo_path, kind))
+            known.add(home_path)
+            copied.append(disp)
     committed = False
     if copied:
         save_manifest(conf_home, manifest)

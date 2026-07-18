@@ -60,6 +60,21 @@ HOME_EXCLUDE = {".config", ".cache", ".local"}  # scanned as their own roots
 
 CAT_ORDER = ["config", "shell", "home", "data", "state", "cache", "unknown"]
 
+UNCATEGORIZED = "Uncategorized"  # program category for programs with none set
+
+
+def ordered_categories(recs):
+    """Program categories in health's grouping order: first appearance across
+    `recs`, with the Uncategorized bucket always last. Shared so the health
+    report and the adopt plan order their categories identically."""
+    seen = []
+    for rec in recs:
+        cat = rec.get("category") or UNCATEGORIZED
+        if cat not in seen:
+            seen.append(cat)
+    return ([c for c in seen if c != UNCATEGORIZED]
+            + ([UNCATEGORIZED] if UNCATEGORIZED in seen else []))
+
 # Bytes considered "text" when sniffing content (7-bit printable, common
 # whitespace, and anything >= 0x80 so UTF-8 passes).
 _TEXT_BYTES = bytes(range(0x20, 0x7F)) + b"\t\n\r\x0b\x0c" + bytes(range(0x80, 0x100))
@@ -454,7 +469,10 @@ def score(name, kind, program, installed, is_git_repo, registry_hit,
         terms.append({"label": "text-only tree", "delta": 15})
     if registry_hit and kind == "file" and name.startswith("."):
         terms.append({"label": f"known rc file ({name})", "delta": 10})
-    if json_heavy:
+    if json_heavy and not registry_hit:
+        # The json-heavy penalty deprioritizes incidental app-state json; a
+        # registered path is a hand-picked config, so it is not penalized (this
+        # is what keeps registered settings.json files above the curated floor).
         terms.append({"label": "json-heavy", "delta": -10})
     if installed is False:
         terms.append({"label": f"orphan: {program} not found (pacman or PATH)",
@@ -599,13 +617,16 @@ def is_adoptable(rec, conf_home):
         must be checked explicitly — the single most important exclusion),
       - dangling links and any non-editable entry (generated / cache / state /
         noise),
+      - anything outside the config-proper locations — data/state/cache dirs
+        (e.g. ~/.local/share/<program>) are program data, not hand-edited
+        config, even when a registry hit forces editable=True on them,
       - the managed repo itself (never adopt ~/.config/config-sync recursively).
     """
     if "secret" in rec["flags"] or "dangling" in rec["flags"]:
         return False
     if rec["editable"] is not True:
         return False
-    if rec["location"] in ("cache", "state"):
+    if rec["location"] not in ("config", "shell", "home", "unknown"):
         return False
     root = repo_root(conf_home)
     return rec["path"] != root and not rec["path"].startswith(root + os.sep)

@@ -55,14 +55,39 @@ class AdoptPlanIOTest(unittest.TestCase):
         self.path = os.path.join(self.tmp.name, "plan.toml")
 
     def test_write_then_load_round_trip(self):
-        rows = [sync.adopt_plan_row(rec(program="tmux", rel=".tmux.conf",
-                                             kind="file", relevance=80))]
+        cfg = inventory.Config(programs={"tmux": {"paths": [".tmux.conf"], "bin": "tmux"}})
+        rows = sync.adopt_plan_rows(
+            [rec(program="tmux", category="Terminal multiplexers",
+                 path="/h/.tmux.conf", rel=".tmux.conf", kind="file")],
+            cfg, "/h/.config", "/h")
         sync.write_adopt_plan(self.path, rows, "curated")
         data = sync.load_adopt_plan(self.path)
         self.assertEqual(data["tier"], "curated")
-        self.assertEqual(data["entries"][0]["program"], "tmux")
-        self.assertEqual(data["entries"][0]["path"], "~/.tmux.conf")
-        self.assertTrue(data["entries"][0]["adopt"])
+        e = data["entries"][0]
+        self.assertEqual(e["program"], "tmux")
+        self.assertEqual(e["paths"], ["~/.tmux.conf"])
+        self.assertEqual(e["repo_dir"], "~/.config/config-sync/tmux")
+        self.assertTrue(e["adopt"])
+
+    def test_rows_group_by_program_and_order_by_category(self):
+        # One entry per program; category order follows first appearance (health's
+        # order), so Editors precedes Shells even though bash sorts before nvim.
+        cfg = inventory.Config(programs={
+            "bash": {"paths": [".bashrc", ".bash_profile"], "bin": "bash"},
+            "nvim": {"paths": ["nvim"], "bin": "nvim"}})
+        cands = [
+            rec(program="nvim", category="Editors", path="/h/.config/nvim",
+                rel=".config/nvim", kind="dir"),
+            rec(program="bash", category="Shells", path="/h/.bashrc",
+                rel=".bashrc", kind="file"),
+            rec(program="bash", category="Shells", path="/h/.bash_profile",
+                rel=".bash_profile", kind="file"),
+        ]
+        rows = sync.adopt_plan_rows(cands, cfg, "/h/.config", "/h")
+        self.assertEqual([r["program"] for r in rows], ["nvim", "bash"])
+        bash = next(r for r in rows if r["program"] == "bash")
+        self.assertEqual(bash["paths"], ["~/.bash_profile", "~/.bashrc"])  # grouped, sorted
+        self.assertEqual(bash["repo_dir"], "~/.config/config-sync/bash")
 
     def test_header_comment_guides_editing(self):
         sync.write_adopt_plan(self.path, [], "everything")
@@ -92,20 +117,22 @@ class AdoptApplyTest(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def plan(self, *rows):
-        return {"version": 1, "tier": "everything", "entries": list(rows)}
+    def plan(self, *entries):
+        return {"version": 1, "tier": "everything", "entries": list(entries)}
 
-    def row(self, path, kind, program, adopt=True):
-        return {"program": program, "path": path, "kind": kind,
-                "category": "", "relevance": 50, "adopt": adopt}
+    def entry(self, program, *paths, adopt=True):
+        # kind is derived from the filesystem at apply time, so the plan carries
+        # only the home paths grouped under their program.
+        return {"program": program, "category": "", "repo_dir": "",
+                "paths": list(paths), "adopt": adopt}
 
     def repo(self, *parts):
         return os.path.join(self.conf, "config-sync", *parts)
 
     def test_apply_copies_true_entries_preserving_structure(self):
         result = sync.adopt_apply(self.plan(
-            self.row("~/.config/ghostty", "dir", "ghostty"),
-            self.row("~/.tmux.conf", "file", "tmux"),
+            self.entry("ghostty", "~/.config/ghostty"),
+            self.entry("tmux", "~/.tmux.conf"),
         ), self.home, self.conf, self.cfg)
         self.assertTrue(os.path.isfile(self.repo("ghostty/config")))  # dir tree preserved
         self.assertTrue(os.path.isfile(self.repo("tmux/.tmux.conf")))
@@ -116,13 +143,13 @@ class AdoptApplyTest(unittest.TestCase):
 
     def test_adopt_false_entries_are_skipped(self):
         result = sync.adopt_apply(
-            self.plan(self.row("~/.tmux.conf", "file", "tmux", adopt=False)),
+            self.plan(self.entry("tmux", "~/.tmux.conf", adopt=False)),
             self.home, self.conf, self.cfg)
         self.assertEqual(result["copied"], [])
         self.assertFalse(os.path.lexists(self.repo("tmux")))  # repo untouched
 
     def test_reapply_is_idempotent(self):
-        plan = self.plan(self.row("~/.tmux.conf", "file", "tmux"))
+        plan = self.plan(self.entry("tmux", "~/.tmux.conf"))
         sync.adopt_apply(plan, self.home, self.conf, self.cfg)
         again = sync.adopt_apply(plan, self.home, self.conf, self.cfg)
         self.assertEqual(again["copied"], [])
