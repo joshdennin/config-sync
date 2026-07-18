@@ -1,6 +1,6 @@
 # config inventory — health check
 
-`Strobe-A` · source `inventory.json` · scanned `2026-07-11T20:44:09-04:00` · checked `2026-07-11 20:44`
+`Strobe-A` · source `inventory.json` · scanned `2026-07-12T00:06:08-04:00` · checked `2026-07-12 00:07`
 
 ## Summary
 
@@ -11,7 +11,7 @@
 - **chezmoi** — 3 uncommitted changes in the working tree
 - **github-cli** — contains secrets — do not sync to a public repo
 - **gtk** — config present at 2 known paths at once
-- **tmux** — 1 uncommitted change in the working tree
+- **tmux** — 2 uncommitted changes in the working tree
 - **winboat** — config present at 2 known paths at once
 - **zsh** — config present at 2 known paths at once
 - **bash** — config present at 3 known paths at once
@@ -158,7 +158,7 @@
 - ✅ program installed (tmux)
 - ✅ config at ~/.config/tmux
 - ✅ git: tmux @ main
-- ⚠️ git: 1 uncommitted change in the working tree
+- ⚠️ git: 2 uncommitted changes in the working tree
   - ↳ `git -C ~/.config/tmux status`
 
 # Virtualization

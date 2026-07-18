@@ -115,14 +115,17 @@ home = [".ssh", ".gnupg", ".password-store", ".netrc", ".aws",
 config = ["gh"]
 
 # --------------------------------------------------------------------------
-# State/cache dirs that live under ~/.config despite not being config →
-# flagged "noise" and deprioritized.
+# State/cache dirs that masquerade as config → flagged "noise" and
+# deprioritized (still recorded, unlike [exclude].home which drops entirely).
+# "home" matches home-dir basenames, "config" matches basenames under
+# ~/.config.
 
 [noise]
-dirs = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
-        "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
-        "Electron", "teams", "Signal", "session", "pulse", "dconf",
-        "ibus"]
+config = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
+          "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
+          "Electron", "teams", "Signal", "session", "pulse", "dconf",
+          "ibus"]
+home = [".mozilla", ".vscode-oss", ".vscode-oss-shared", ".steam"]
 
 # --------------------------------------------------------------------------
 # Home-directory basenames dropped from the scan entirely — they never reach

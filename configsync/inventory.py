@@ -48,7 +48,8 @@ class Config:
     shell_files: frozenset = field(default_factory=frozenset)    # home-dir rc files that get location "shell"
     secret_home: frozenset = field(default_factory=frozenset)    # sensitive home-dir basenames (never content-sniffed)
     secret_config: frozenset = field(default_factory=frozenset)  # sensitive ~/.config basenames
-    noise_dirs: frozenset = field(default_factory=frozenset)     # state/cache dirs living under ~/.config
+    noise_home: frozenset = field(default_factory=frozenset)     # state/cache dirs in $HOME
+    noise_config: frozenset = field(default_factory=frozenset)   # state/cache dirs under ~/.config
     generated_exts: frozenset = field(default_factory=frozenset)       # machine-generated file extensions (.-prefixed)
     generated_dir_names: frozenset = field(default_factory=frozenset)  # machine-generated directory basenames
     exclude_home: tuple = ()  # home-dir basename globs never recorded (state/junk)
@@ -138,6 +139,7 @@ def load_config(path):
         parsed[name] = info
 
     secrets = _table(cfg, "secrets")
+    noise = _table(cfg, "noise")
     generated = _table(cfg, "generated")
     return Config(
         programs=parsed,
@@ -147,7 +149,8 @@ def load_config(path):
         shell_files=frozenset(_str_list(_table(cfg, "shell"), "files", "[shell].files")),
         secret_home=frozenset(_str_list(secrets, "home", "[secrets].home")),
         secret_config=frozenset(_str_list(secrets, "config", "[secrets].config")),
-        noise_dirs=frozenset(_str_list(_table(cfg, "noise"), "dirs", "[noise].dirs")),
+        noise_home=frozenset(_str_list(noise, "home", "[noise].home")),
+        noise_config=frozenset(_str_list(noise, "config", "[noise].config")),
         exclude_home=tuple(_str_list(_table(cfg, "exclude"), "home", "[exclude].home")),
         generated_dir_names=frozenset(_str_list(generated, "dir_names",
                                                 "[generated].dir_names")),
@@ -459,7 +462,8 @@ def analyze(lpath, real, root_cat, home, qq, cfg):
     location = categorize(name, root_cat, cfg)
     secret = ((root_cat == "home" and name in cfg.secret_home)
               or (root_cat == "config" and name in cfg.secret_config))
-    noise = root_cat == "config" and name in cfg.noise_dirs
+    noise = ((root_cat == "home" and name in cfg.noise_home)
+             or (root_cat == "config" and name in cfg.noise_config))
     flags = [f for f, on in (("secret", secret), ("noise", noise)) if on]
 
     kind = "dir" if os.path.isdir(real) else "file"
