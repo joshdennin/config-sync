@@ -136,6 +136,43 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(by_rel[".config/broken"]["flags"], ["dangling"])
         self.assertIsNone(by_rel[".config/broken"]["kind"])
 
+    def test_registered_subpath_surfaces_inside_noise_dir(self):
+        # A `paths` entry containing a separator points at one file inside a dir.
+        # That file becomes its own attributed, adoptable entry even though the
+        # containing dir is [noise] (hidden and not adoptable) — the fixture's
+        # ~/.config/Code/User/settings.json inside the noise-flagged Code dir.
+        conf = os.path.join(self.home, ".config")
+        cfg = inventory.Config(
+            programs={"code": {"paths": ["Code/User/settings.json"], "bin": "code"}},
+            registry_by_path={"Code/User/settings.json": "code"},
+            noise_config=frozenset({"Code"}),
+        )
+        by_rel = {e["rel"]: e
+                  for e in inventory.build_inventory(scan_args(), self.home, cfg)["entries"]}
+
+        parent = by_rel[".config/Code"]
+        self.assertEqual(parent["flags"], ["noise"])
+        self.assertIs(parent["editable"], False)
+        self.assertFalse(inventory.is_adoptable(parent, conf))
+
+        sub = by_rel[".config/Code/User/settings.json"]
+        self.assertEqual((sub["kind"], sub["program"], sub["location"]),
+                         ("file", "code", "config"))
+        self.assertIs(sub["editable"], True)
+        self.assertTrue(inventory.is_adoptable(sub, conf))
+
+    def test_exclude_config_drops_dirs_under_config_root(self):
+        # [exclude].config globs drop ~/.config basenames from the scan entirely,
+        # symmetric with [exclude].home. The fixture's ~/.config/Code matches, so
+        # it never becomes an entry (not even flagged noise); a sibling that does
+        # not match is still recorded.
+        cfg = inventory.Config(exclude_config=("Code", "poly*"))
+        by_rel = {e["rel"]: e
+                  for e in inventory.build_inventory(scan_args(), self.home, cfg)["entries"]}
+        self.assertNotIn(".config/Code", by_rel)      # exact match dropped
+        self.assertNotIn(".config/polybar", by_rel)   # glob match dropped
+        self.assertIn(".config/ghostty", by_rel)      # non-match still recorded
+
     def test_display_filters_shape_listing_not_data(self):
         inv, by_rel = self.scan()
         args = scan_args()
@@ -220,6 +257,27 @@ class RepoMappingTest(unittest.TestCase):
         got = inventory.repo_path_for("/h/.config/foo", "dir", None,
                                       self.cfg, self.conf)
         self.assertEqual(got, os.path.join(self.root, "foo"))
+
+    def test_subpaths_in_distinct_dirs_keep_their_structure(self):
+        # gtk-3.0/settings.ini and gtk-4.0/settings.ini share a basename; keeping
+        # the leading dir (not shared across the program's sub-paths) is what
+        # stops them from colliding on a single gtk/settings.ini.
+        cfg = inventory.Config(programs={"gtk": {"paths": [
+            "gtk-3.0/settings.ini", "gtk-3.0/gtk.css",
+            "gtk-4.0/settings.ini", "gtk-4.0/gtk.css"], "bin": "gtk-launch"}})
+        for sub in ("gtk-3.0/settings.ini", "gtk-4.0/settings.ini"):
+            got = inventory.repo_path_for("/h/.config/" + sub, "file", "gtk",
+                                          cfg, self.conf)
+            self.assertEqual(got, os.path.join(self.root, "gtk-launch", sub))
+
+    def test_shared_leading_subpath_dir_is_dropped(self):
+        # Every claude sub-path lives under .claude/, which just duplicates the
+        # program dir, so it is stripped: .claude/settings.json -> settings.json.
+        cfg = inventory.Config(programs={"claude": {"paths": [
+            ".claude/settings.json", ".claude/CLAUDE.md"], "bin": "claude"}})
+        got = inventory.repo_path_for("/h/.claude/settings.json", "file",
+                                      "claude", cfg, self.conf)
+        self.assertEqual(got, os.path.join(self.root, "claude", "settings.json"))
 
 
 

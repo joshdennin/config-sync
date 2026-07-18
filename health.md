@@ -1,10 +1,10 @@
 # config inventory — health check
 
-`Strobe-A` · source `inventory.json` · scanned `2026-07-12T00:06:08-04:00` · checked `2026-07-12 00:07`
+`Strobe-A` · source `inventory.json` · scanned `2026-07-18T10:39:54-04:00` · checked `2026-07-18 10:40`
 
 ## Summary
 
-**22 programs checked** — ✅ 78 OK · ⚠️ 9 WARN · ❌ 1 ERROR · ℹ️ 19 INFO
+**26 programs checked** — ✅ 84 OK · ⚠️ 10 WARN · ❌ 1 ERROR · ℹ️ 23 INFO
 
 ### Needs attention
 
@@ -15,6 +15,7 @@
 - **winboat** — config present at 2 known paths at once
 - **zsh** — config present at 2 known paths at once
 - **bash** — config present at 3 known paths at once
+- **gemini** — config present but program not found (pacman or PATH)
 - **gnupg** — contains secrets — do not sync to a public repo
 - **pass** — contains secrets — do not sync to a public repo
 - **unattributed** — dangling symlink: ~/.steampath (target missing)
@@ -30,8 +31,6 @@
 ## steam
 
 - ✅ program installed (steam)
-- ✅ config at ~/.steam
-- ℹ️ not under version control — candidate for a dotfiles repo
 
 # System monitors
 
@@ -85,6 +84,7 @@
 
 - ✅ program installed (dconf)
 - ✅ config at ~/.config/dconf
+- ℹ️ not under version control — candidate for a dotfiles repo
 
 # Shells
 
@@ -143,6 +143,12 @@
 - ✅ config at ~/.config/nvim
 - ✅ git: nvim @ main
 
+## code
+
+- ✅ program installed (code)
+- ✅ config at ~/.config/Code - OSS/User/settings.json
+- ℹ️ not under version control — candidate for a dotfiles repo
+
 # File managers
 
 ## nemo
@@ -171,6 +177,21 @@
 - ⚠️ config present at 2 known paths at once
 - ℹ️ not under version control — candidate for a dotfiles repo
 
+# Agents
+
+## claude
+
+- ✅ program installed (claude)
+- ✅ config at ~/.claude
+- ℹ️ not under version control — candidate for a dotfiles repo
+
+## gemini
+
+- ⚠️ config present but program not found (pacman or PATH)
+  - ↳ likely stale; verify before removing ~/.gemini
+- ✅ config at ~/.gemini
+- ℹ️ not under version control — candidate for a dotfiles repo
+
 # Secrets & security
 
 ## gnupg
@@ -195,11 +216,20 @@
 
 # Uncategorized
 
+## xscreensaver
+
+- ✅ program installed (xscreensaver)
+- ✅ config at ~/.xscreensaver
+- ℹ️ not under version control — candidate for a dotfiles repo
+
 ## unattributed
 
 - ✅ config at ~/.config/Code - OSS
 - ✅ config at ~/.config/Epic
 - ✅ config at ~/.config/QtProject.conf
+- ✅ config at ~/.config/Vampire_Survivors
+- ✅ config at ~/.config/Vampire_Survivors_1804493908
+- ✅ config at ~/.config/Vampire_Survivors_Data
 - ✅ config at ~/.config/autostart
 - ✅ config at ~/.config/cachyos
 - ✅ config at ~/.config/cachyos-hello.json
@@ -214,10 +244,7 @@
 - ✅ config at ~/.config/user-dirs.locale
 - ✅ config at ~/.config/x-cinnamon-xdg-terminals.list
 - ✅ config at ~/.config/xdg-terminals.list
-- ✅ config at ~/.claude
-- ✅ config at ~/.claude.json
 - ✅ config at ~/.factorio
-- ✅ config at ~/.gemini
 - ✅ config at ~/.p10k.zsh
 - ✅ config at ~/.steam/steam.pid  (via ~/.steampid → symlink)
 - ✅ config at ~/.vscode-oss

@@ -52,7 +52,8 @@ class Config:
     noise_config: frozenset = field(default_factory=frozenset)   # state/cache dirs under ~/.config
     generated_exts: frozenset = field(default_factory=frozenset)       # machine-generated file extensions (.-prefixed)
     generated_dir_names: frozenset = field(default_factory=frozenset)  # machine-generated directory basenames
-    exclude_home: tuple = ()  # home-dir basename globs never recorded (state/junk)
+    exclude_home: tuple = ()    # home-dir basename globs never recorded (state/junk)
+    exclude_config: tuple = ()  # ~/.config basename globs never recorded (state/junk)
 
 
 HOME_EXCLUDE = {".config", ".cache", ".local"}  # scanned as their own roots
@@ -152,6 +153,7 @@ def load_config(path):
         noise_home=frozenset(_str_list(noise, "home", "[noise].home")),
         noise_config=frozenset(_str_list(noise, "config", "[noise].config")),
         exclude_home=tuple(_str_list(_table(cfg, "exclude"), "home", "[exclude].home")),
+        exclude_config=tuple(_str_list(_table(cfg, "exclude"), "config", "[exclude].config")),
         generated_dir_names=frozenset(_str_list(generated, "dir_names",
                                                 "[generated].dir_names")),
         # Normalize to the leading-dot lowercase form probe_file compares against.
@@ -266,9 +268,12 @@ def load_pacman_qq():
     return set(out.splitlines()) if out else set()
 
 
-def attribute(name, qq, cfg):
-    """Resolve an entry name to (program, registry_hit)."""
-    prog = cfg.registry_by_path.get(name)
+def attribute(name, qq, cfg, key=None):
+    """Resolve an entry to (program, registry_hit). `key` is the registry lookup
+    key when it differs from the basename — a registered sub-path like
+    "Code - OSS/User/settings.json", whose basename ("settings.json") would not
+    match. The pacman-name fallback always keys off the basename."""
+    prog = cfg.registry_by_path.get(key or name)
     if prog:
         return prog, True
     for cand in (name, name.lstrip(".").lower()):
@@ -416,12 +421,13 @@ def resolve_roots(args, home):
     return roots
 
 
-def categorize(name, root_cat, cfg):
-    # Precedence: shell > config > home > root default.
+def categorize(name, root_cat, cfg, key=None):
+    # Precedence: shell > config > home > root default. `key` is the registry
+    # lookup key for a registered sub-path (see attribute).
     if root_cat == "home":
         if name in cfg.shell_files:
             return "shell"
-        if name in cfg.registry_by_path:
+        if (key or name) in cfg.registry_by_path:
             return "config"
         return "home"
     return root_cat
@@ -457,9 +463,12 @@ def score(name, kind, program, installed, is_git_repo, registry_hit,
     return total, terms
 
 
-def analyze(lpath, real, root_cat, home, qq, cfg):
+def analyze(lpath, real, root_cat, home, qq, cfg, registry_key=None):
+    """Build one entry. `registry_key` names a registered sub-path (a `paths`
+    entry containing a separator) when this is one — it drives attribution and
+    location, since the basename alone cannot match the sub-path registration."""
     name = os.path.basename(lpath)
-    location = categorize(name, root_cat, cfg)
+    location = categorize(name, root_cat, cfg, key=registry_key)
     secret = ((root_cat == "home" and name in cfg.secret_home)
               or (root_cat == "config" and name in cfg.secret_config))
     noise = ((root_cat == "home" and name in cfg.noise_home)
@@ -469,7 +478,7 @@ def analyze(lpath, real, root_cat, home, qq, cfg):
     kind = "dir" if os.path.isdir(real) else "file"
     st = os.stat(real)
 
-    program, registry_hit = attribute(name, qq, cfg)
+    program, registry_hit = attribute(name, qq, cfg, key=registry_key)
     installed = check_installed(program, qq, cfg) if program else None
     if program is None and root_cat == "unknown":
         owner = pacman_owner(real)
@@ -544,6 +553,8 @@ def build_inventory(args, home, cfg):
             if root_cat == "home" and (not name.startswith(".") or name in HOME_EXCLUDE
                                        or any(fnmatch(name, p) for p in cfg.exclude_home)):
                 continue
+            if root_cat == "config" and any(fnmatch(name, p) for p in cfg.exclude_config):
+                continue
             lpath = os.path.join(root, name)
             real = os.path.realpath(lpath)
             if not os.path.exists(real):
@@ -558,6 +569,22 @@ def build_inventory(args, home, cfg):
                     rec["via_symlink"] = (rec["via_symlink"] or []) + [lpath]
                 continue
             entries[real] = analyze(lpath, real, root_cat, home, qq, cfg)
+    # Registered sub-paths — `paths` entries containing a separator, e.g.
+    # "Code - OSS/User/settings.json" — are not reached by the top-level
+    # enumeration above. Resolve each explicitly against the scanned roots (in
+    # priority order) so a single tracked file inside an otherwise-untracked
+    # folder becomes its own entry; the parent stays hidden via [noise]. Bounded:
+    # one existence check per registered sub-path, no directory walk.
+    for relpath in (p for p in cfg.registry_by_path if os.sep in p):
+        for root, root_cat in roots:
+            lpath = os.path.join(root, relpath)
+            if not os.path.lexists(lpath):
+                continue
+            real = os.path.realpath(lpath)
+            if os.path.exists(real) and real not in entries:
+                entries[real] = analyze(lpath, real, root_cat, home, qq, cfg,
+                                        registry_key=relpath)
+            break  # first root where the sub-path exists wins
     meta = {"tool": "config-sync", "version": VERSION, "host": platform.node(),
             "scanned_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "roots": [r for r, _ in roots], "all": args.all}
@@ -627,6 +654,25 @@ def repo_path_for(home_path, kind, program, cfg, conf_home):
     prog_dir = os.path.join(repo_root(conf_home), dirname)
     if kind == "dir":
         return prog_dir
-    return os.path.join(prog_dir, os.path.basename(home_path))
+    return os.path.join(prog_dir, _repo_leaf(home_path, program, cfg))
+
+
+def _repo_leaf(home_path, program, cfg):
+    """The file's location *within* its program dir. A plain file lands at its
+    basename; a registered sub-path keeps its directory structure so two files
+    sharing a basename in different sub-dirs (e.g. gtk-3.0/settings.ini and
+    gtk-4.0/settings.ini) map to gtk-3.0/ and gtk-4.0/ rather than colliding.
+    The leading component is dropped when every sub-path of the program shares
+    it — there it merely duplicates the program dir (.claude/settings.json is
+    stored as settings.json, not .claude/settings.json)."""
+    subpaths = [p for p in cfg.programs.get(program, {}).get("paths", ())
+                if os.sep in p] if program else []
+    match = max((p for p in subpaths if home_path.endswith(os.sep + p)),
+                key=len, default=None)
+    if match is None:
+        return os.path.basename(home_path)
+    if len({p.split(os.sep, 1)[0] for p in subpaths}) == 1:
+        return match.split(os.sep, 1)[1]  # shared leading dir duplicates prog dir
+    return match
 
 

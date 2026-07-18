@@ -38,6 +38,9 @@ vim        = { paths = [".vimrc", ".vim"], pkgs = ["gvim"], category = "Editors"
 neovim     = { paths = ["nvim"], bin = "nvim", category = "Editors" }
 emacs      = { paths = [".emacs", ".emacs.d", "emacs"], category = "Editors" }
 micro      = { paths = ["micro"], category = "Editors" }
+# VS Code (OSS): track only the hand-edited files, not the state-heavy parent
+# (kept out via [noise].config "Code - OSS"). Sub-paths resolve within it.
+code       = { paths = ["Code - OSS/User/settings.json", "Code - OSS/User/keybindings.json"], category = "Editors" }
 # Terminal emulators
 kitty      = { paths = ["kitty"], category = "Terminal emulators" }
 alacritty  = { paths = ["alacritty"], category = "Terminal emulators" }
@@ -58,7 +61,9 @@ dunst      = { paths = ["dunst"], category = "Notification daemons" }
 mako       = { paths = ["mako"], category = "Notification daemons" }
 # Display server & toolkits
 xorg       = { paths = [".xinitrc", ".xprofile", ".Xresources", ".Xdefaults"], pkgs = ["xorg-server"], bin = "Xorg", category = "Display servers" }
-gtk        = { paths = ["gtk-3.0", "gtk-4.0", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], bin = "gtk-launch", category = "GUI toolkits" }
+# GTK: track the hand-edited files, not the whole dir (which also holds
+# file-chooser bookmarks and DE-written state). Parents hidden via [noise].config.
+gtk        = { paths = ["gtk-3.0/settings.ini", "gtk-3.0/gtk.css", "gtk-4.0/settings.ini", "gtk-4.0/gtk.css", ".gtkrc-2.0"], pkgs = ["gtk3", "gtk4"], bin = "gtk-launch", category = "GUI toolkits" }
 qt         = { paths = ["qt5ct", "qt6ct"], pkgs = ["qt5ct", "qt6ct"], bin = "qt6ct", category = "GUI toolkits" }
 fontconfig = { paths = ["fontconfig"], bin = "fc-list", category = "Fonts" }
 # Media & viewers
@@ -88,12 +93,16 @@ curl       = { paths = [".curlrc"], category = "Network tools" }
 # Desktop environments
 cinnamon         = { paths = ["cinnamon"], category = "Desktop environments" }
 cinnamon-session = { paths = ["cinnamon-session"], category = "Desktop environments" }
-dconf            = { paths = ["dconf"], category = "Desktop environments" }
 # Gaming & compatibility
-steam      = { paths = [".steam"], category = "Gaming" }
 protonplus = { paths = ["ProtonPlus"], category = "Gaming" }
-# Virtualization
-winboat    = { paths = ["winboat", ".winboat"], category = "Virtualization" }
+# Agents — track only the hand-edited files (settings, keybindings, memory).
+# The parent dirs hold session state and credentials, so they are hidden via
+# [noise].home; only these sub-paths reach the repo, grouped under <program>/.
+claude     = { paths = [".claude/settings.json", ".claude/keybindings.json", ".claude/CLAUDE.md"], category = "Agents" }
+gemini     = { paths = [".gemini/settings.json"], category = "Agents" }
+# Virtualization — winboat is an Electron app; track only its config files, not
+# the surrounding Electron/runtime state (parent dirs hidden via [noise]).
+winboat    = { paths = ["winboat/config.json", ".winboat/winboat.config.json"], category = "Virtualization" }
 # Package managers
 flatpak    = { paths = ["flatpak"], category = "Package managers" }
 
@@ -111,7 +120,7 @@ files = [".bashrc", ".bash_profile", ".bash_logout", ".profile",
 
 [secrets]
 home = [".ssh", ".gnupg", ".password-store", ".netrc", ".aws",
-        ".git-credentials", ".docker", ".kube", ".pki"]
+        ".git-credentials", ".docker", ".kube"]
 config = ["gh"]
 
 # --------------------------------------------------------------------------
@@ -121,18 +130,20 @@ config = ["gh"]
 # ~/.config.
 
 [noise]
+home = [".vscode-oss", ".vscode-oss-shared", ".factorio", ".claude.json",
+        ".claude", ".gemini", ".winboat"]
 config = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
           "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
-          "Electron", "teams", "Signal", "session", "pulse", "dconf",
-          "ibus"]
-home = [".mozilla", ".vscode-oss", ".vscode-oss-shared", ".steam"]
+          "Electron", "teams", "Signal", "session", "ibus", "winboat",
+          "gtk-3.0", "gtk-4.0"]
 
 # --------------------------------------------------------------------------
-# Home-directory basenames dropped from the scan entirely — they never reach
-# the inventory (not even `scan --json`), unlike [noise]/[generated] which are
-# only hidden from the default listing. Use this for pure state, cache, runtime
-# and backup junk that is not config at all and would otherwise clutter $HOME's
-# report. Entries are glob patterns matched against home-dir basenames.
+# Basenames dropped from the scan entirely — they never reach the inventory
+# (not even `scan --json`), unlike [noise]/[generated] which are only hidden
+# from the default listing. Use this for pure state, cache, runtime and backup
+# junk that is not config at all and would otherwise clutter the report. Entries
+# are glob patterns: "home" matches home-dir basenames, "config" matches
+# basenames under ~/.config. Matching is case-sensitive.
 
 [exclude]
 home = [".zsh_history", ".zcompdump*",          # zsh history + completion cache
@@ -141,8 +152,10 @@ home = [".zsh_history", ".zcompdump*",          # zsh history + completion cache
         ".xsession-errors", ".xsession-errors.old",  # session logs
         ".pulse-cookie", ".pki", ".nv",          # pulse cookie / NSS cert store / GL cache
         ".var", ".icons", ".themes",             # flatpak data + legacy icon/theme data dirs
+        ".claude.json",                          # Claude Code session/project state (settings live in ~/.claude/)
+        ".steam",
         "*.bak", "*.bak.*"]                       # editor/backup leftovers (e.g. .zshrc.bak.*)
-
+config = ["pulse", "evolution", "Epic", "cachyos-hello.json", "dconf", "mozilla"]
 # --------------------------------------------------------------------------
 # Machine-generated markers → hidden from the default listing. "exts" match a
 # file's extension (leading dot optional, case-insensitive); "dir_names" match

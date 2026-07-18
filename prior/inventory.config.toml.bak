@@ -96,9 +96,9 @@ protonplus = { paths = ["ProtonPlus"], category = "Gaming" }
 winboat    = { paths = ["winboat", ".winboat"], category = "Virtualization" }
 # Package managers
 flatpak    = { paths = ["flatpak"], category = "Package managers" }
-# LLM Harnesses
-claude = { paths = [".claude"], category = "Harness"}
-gemini = { paths = [".gemini"], category = "Harness"}
+# Agents 
+claude = { paths = [".claude"], bin = "claude", category = "Agents"}
+gemini = { paths = [".gemini"], category = "Agents"}
 # --------------------------------------------------------------------------
 # Shell startup files → category "shell".
 
@@ -113,7 +113,7 @@ files = [".bashrc", ".bash_profile", ".bash_logout", ".profile",
 
 [secrets]
 home = [".ssh", ".gnupg", ".password-store", ".netrc", ".aws",
-        ".git-credentials", ".docker", ".kube", ".pki"]
+        ".git-credentials", ".docker", ".kube"]
 config = ["gh"]
 
 # --------------------------------------------------------------------------
@@ -121,10 +121,10 @@ config = ["gh"]
 # flagged "noise" and deprioritized.
 
 [noise]
-home = [""]
+home = [".factorio", ".claude.json"]
 config = ["Code", "Code - OSS", "VSCodium", "chromium", "google-chrome",
         "BraveSoftware", "vivaldi", "opera", "discord", "Slack", "spotify",
-        "Electron", "teams", "Signal", "session", "dconf" ]
+        "Electron", "teams", "Signal", "session"]
 
 # --------------------------------------------------------------------------
 # Home-directory basenames dropped from the scan entirely — they never reach
@@ -140,8 +140,10 @@ home = [".zsh_history", ".zcompdump*",          # zsh history + completion cache
         ".xsession-errors", ".xsession-errors.old",  # session logs
         ".pulse-cookie", ".pki", ".nv",          # pulse cookie / NSS cert store / GL cache
         ".var", ".icons", ".themes",             # flatpak data + legacy icon/theme data dirs
+        ".steam"
         "*.bak", "*.bak.*"]                       # editor/backup leftovers (e.g. .zshrc.bak.*)
-config = ["pulse", "evolution", "Epic", "cachyos-Hello.json", "unity3d", "mozilla"]
+config = ["pulse", "evolution", "Epic", "cachyos-Hello.json", "dconf", "unity3d",
+        "mozilla"]
 
 # --------------------------------------------------------------------------
 # Machine-generated markers → hidden from the default listing. "exts" match a
