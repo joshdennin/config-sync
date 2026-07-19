@@ -159,7 +159,7 @@ def cmd_plan(args):
     ensure_repo_scaffold(conf)  # create the repo dir + capture config before writing
     scan_ns = argparse.Namespace(all=False, root=[])
     inv = build_inventory(scan_ns, home, cfg)
-    cands = adopt_candidates(inv, args.select, args.include, args.exclude, conf)
+    cands = adopt_candidates(inv, args.select, args.include, args.exclude)
     rows = adopt_plan_rows(cands, cfg, conf)
     omitted = omitted_programs(inv, rows)
     write_adopt_plan(plan_path, rows, args.select, tilde(repo_root(conf), home), omitted)

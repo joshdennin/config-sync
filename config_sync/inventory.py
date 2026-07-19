@@ -56,6 +56,23 @@ class Config:
     exclude_config: tuple = ()  # ~/.config basename globs never recorded (state/junk)
 
 
+@dataclass(frozen=True)
+class Scan:
+    """Per-scan invariants, threaded through `analyze` instead of module globals.
+
+    Bundles $HOME and its derived config root, the pacman set loaded once, the
+    classification Config, and a git-record cache scoped to this one scan — so
+    the memoized git records live and die with the scan rather than persisting
+    at module scope across the process. `frozen` blocks rebinding the fields;
+    the git_cache dict is still mutated in place by `git_record`.
+    """
+    home: str
+    conf_home: str
+    qq: set
+    cfg: Config
+    git_cache: dict = field(default_factory=dict)
+
+
 HOME_EXCLUDE = {".config", ".cache", ".local"}  # scanned as their own roots
 
 CAT_ORDER = ["config", "shell", "home", "data", "state", "cache", "unknown"]
@@ -316,8 +333,6 @@ def pacman_owner(path):
 # --------------------------------------------------------------------------
 # Git awareness
 
-_git_cache = {}
-
 
 def find_git_anchor(path):
     """Nearest ancestor (or self) containing a .git entry; pure os.path, no forks."""
@@ -330,13 +345,14 @@ def find_git_anchor(path):
     return None
 
 
-def git_record(anchor):
-    """Read-only git sub-record, memoized per repo toplevel."""
+def git_record(anchor, cache):
+    """Read-only git sub-record, memoized per repo toplevel in `cache` (a dict
+    scoped to one scan — see Scan.git_cache)."""
     top = capture(["git", "-C", anchor, "rev-parse", "--show-toplevel"])
     if not top:
         return None
-    if top in _git_cache:
-        return _git_cache[top]
+    if top in cache:
+        return cache[top]
 
     def g(*args):
         return capture(["git", "-C", top, *args])
@@ -389,7 +405,7 @@ def git_record(anchor):
            "upstream": upstream, "ahead": ahead, "behind": behind,
            "default_branch": default, "vs_default": vs_default,
            "dirty": status_counts(top), "last_commit": last_commit}
-    _git_cache[top] = rec
+    cache[top] = rec
     return rec
 
 
@@ -409,6 +425,7 @@ class Entry:
     size: int | None = None
     mtime: str | None = None
     editable: bool | None = None       # human-editable config (False = generated/cache/state)
+    adoptable: bool = False            # safe+sensible to copy into the managed repo (see safe_to_adopt)
     is_git_repo: bool = False
     git: dict | None = None
     program: str | None = None
@@ -483,10 +500,12 @@ def score(name, kind, program, installed, is_git_repo, registry_hit,
     return total, terms
 
 
-def analyze(lpath, real, root_cat, home, qq, cfg, registry_key=None):
-    """Build one entry. `registry_key` names a registered sub-path (a `paths`
-    entry containing a separator) when this is one — it drives attribution and
-    location, since the basename alone cannot match the sub-path registration."""
+def analyze(lpath, real, root_cat, scan, registry_key=None):
+    """Build one entry. `scan` carries the per-scan invariants (home, config root,
+    pacman set, Config, git cache). `registry_key` names a registered sub-path (a
+    `paths` entry containing a separator) when this is one — it drives attribution
+    and location, since the basename alone cannot match the sub-path registration."""
+    cfg, qq = scan.cfg, scan.qq
     name = os.path.basename(lpath)
     location = categorize(name, root_cat, cfg, key=registry_key)
     secret = ((root_cat == "home" and name in cfg.secret_home)
@@ -506,7 +525,7 @@ def analyze(lpath, real, root_cat, home, qq, cfg, registry_key=None):
             program, installed = owner, True
 
     anchor = find_git_anchor(real)
-    git = git_record(anchor) if anchor else None
+    git = git_record(anchor, scan.git_cache) if anchor else None
 
     if kind == "dir":
         size, stats, _ = probe_dir(real, cfg, skip_read=secret)
@@ -533,13 +552,14 @@ def analyze(lpath, real, root_cat, home, qq, cfg, registry_key=None):
                              registry_hit, text_only, json_heavy)
     return asdict(Entry(
         path=real,
-        rel=rel_home(real, home),
+        rel=rel_home(real, scan.home),
         location=location,
         kind=kind,
         via_symlink=[lpath] if lpath != real else None,
         size=size,
         mtime=iso(st.st_mtime),
         editable=editable,
+        adoptable=safe_to_adopt(location, flags, editable, real, scan.conf_home),
         is_git_repo=git is not None,
         git=git,
         program=program,
@@ -561,7 +581,8 @@ def dangling_entry(lpath, root_cat, home, cfg):
 
 
 def build_inventory(args, home, cfg):
-    qq = load_pacman_qq()
+    scan = Scan(home=home, conf_home=config_home(home),
+                qq=load_pacman_qq(), cfg=cfg)
     roots = resolve_roots(args, home)
     entries = {}  # keyed on resolved real path -> dedup collapses links + target
     for root, root_cat in roots:
@@ -588,7 +609,7 @@ def build_inventory(args, home, cfg):
                 if lpath != real:
                     rec["via_symlink"] = (rec["via_symlink"] or []) + [lpath]
                 continue
-            entries[real] = analyze(lpath, real, root_cat, home, qq, cfg)
+            entries[real] = analyze(lpath, real, root_cat, scan)
     # Registered sub-paths — `paths` entries containing a separator, e.g.
     # "Code - OSS/User/settings.json" — are not reached by the top-level
     # enumeration above. Resolve each explicitly against the scanned roots (in
@@ -602,7 +623,7 @@ def build_inventory(args, home, cfg):
                 continue
             real = os.path.realpath(lpath)
             if os.path.exists(real) and real not in entries:
-                entries[real] = analyze(lpath, real, root_cat, home, qq, cfg,
+                entries[real] = analyze(lpath, real, root_cat, scan,
                                         registry_key=relpath)
             break  # first root where the sub-path exists wins
     meta = {"tool": "config-sync", "version": VERSION, "host": platform.node(),
@@ -611,27 +632,36 @@ def build_inventory(args, home, cfg):
     return {"meta": meta, "entries": list(entries.values())}
 
 
-def is_adoptable(rec, conf_home):
-    """True when an entry is safe and sensible to copy into the managed repo.
+def safe_to_adopt(location, flags, editable, real_path, conf_home):
+    """The adopt safety gate as a pure predicate, evaluated once per entry at scan
+    time and stored as Entry.adoptable. Computing it here — from the raw fields,
+    not by re-reading `editable` — is what keeps the decision from resting on the
+    fact that secrets carry editable=True (their content is never sniffed). No
+    downstream code reconstructs this; it reads the stored bool via is_adoptable.
 
     A hard safety gate for `adopt`, not a display filter. Refuses:
-      - secrets (editable is True for them since sniffing is skipped, so this
-        must be checked explicitly — the single most important exclusion),
-      - dangling links and any non-editable entry (generated / cache / state /
-        noise),
+      - secrets and dangling links (the single most important exclusion),
+      - any non-editable entry (generated / cache / state / noise),
       - anything outside the config-proper locations — data/state/cache dirs
         (e.g. ~/.local/share/<program>) are program data, not hand-edited
         config, even when a registry hit forces editable=True on them,
       - the managed repo itself (never adopt ~/.config/config-sync recursively).
     """
-    if "secret" in rec["flags"] or "dangling" in rec["flags"]:
+    if "secret" in flags or "dangling" in flags:
         return False
-    if rec["editable"] is not True:
+    if editable is not True:
         return False
-    if rec["location"] not in ("config", "shell", "home", "unknown"):
+    if location not in ("config", "shell", "home", "unknown"):
         return False
     root = repo_root(conf_home)
-    return rec["path"] != root and not rec["path"].startswith(root + os.sep)
+    return real_path != root and not real_path.startswith(root + os.sep)
+
+
+def is_adoptable(rec):
+    """Whether an entry may be copied into the managed repo. Reads the decision
+    made once at scan time (Entry.adoptable via safe_to_adopt); a hard safety
+    gate for `adopt`, never a display filter."""
+    return bool(rec.get("adoptable"))
 
 
 # --------------------------------------------------------------------------

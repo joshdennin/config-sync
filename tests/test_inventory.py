@@ -84,7 +84,6 @@ class ScanTest(unittest.TestCase):
                               lambda top, cap=500: {"modified": 1, "untracked": 0}),
             mock.patch.object(inventory.shutil, "which", lambda name: None),
             mock.patch.dict(os.environ, {"HOME": self.home}, clear=False),
-            mock.patch.dict(inventory._git_cache, clear=True),
         ]
         for p in patches:
             p.start()
@@ -141,7 +140,6 @@ class ScanTest(unittest.TestCase):
         # That file becomes its own attributed, adoptable entry even though the
         # containing dir is [noise] (hidden and not adoptable) — the fixture's
         # ~/.config/Code/User/settings.json inside the noise-flagged Code dir.
-        conf = os.path.join(self.home, ".config")
         cfg = inventory.Config(
             programs={"code": {"paths": ["Code/User/settings.json"], "bin": "code"}},
             registry_by_path={"Code/User/settings.json": "code"},
@@ -153,13 +151,13 @@ class ScanTest(unittest.TestCase):
         parent = by_rel[".config/Code"]
         self.assertEqual(parent["flags"], ["noise"])
         self.assertIs(parent["editable"], False)
-        self.assertFalse(inventory.is_adoptable(parent, conf))
+        self.assertFalse(inventory.is_adoptable(parent))  # adoptable set at scan time
 
         sub = by_rel[".config/Code/User/settings.json"]
         self.assertEqual((sub["kind"], sub["program"], sub["location"]),
                          ("file", "code", "config"))
         self.assertIs(sub["editable"], True)
-        self.assertTrue(inventory.is_adoptable(sub, conf))
+        self.assertTrue(inventory.is_adoptable(sub))
 
     def test_exclude_config_drops_dirs_under_config_root(self):
         # [exclude].config globs drop ~/.config basenames from the scan entirely,
@@ -209,17 +207,28 @@ class ScanTest(unittest.TestCase):
 
 
 class AdoptableTest(unittest.TestCase):
+    """safe_to_adopt is the single source of truth for the adopt safety gate; the
+    scan stores its result as Entry.adoptable and is_adoptable just reads that."""
+
     CONF = "/h/.config"  # repo_root -> /h/.config/config-sync
 
-    def adoptable(self, **kw):
-        return inventory.is_adoptable(rec(**kw), self.CONF)
+    def adoptable(self, location="config", flags=(), editable=True,
+                  path="/h/.config/x"):
+        return inventory.safe_to_adopt(location, list(flags), editable, path,
+                                       self.CONF)
 
     def test_plain_editable_config_is_adoptable(self):
-        self.assertTrue(self.adoptable())  # rec() default: editable, config, no flags
+        self.assertTrue(self.adoptable())  # editable, config, no flags
+
+    def test_is_adoptable_reads_the_stored_decision(self):
+        # The accessor never recomputes — it trusts the scan-time bool, so a
+        # record whose fields would qualify is still not adoptable if unset.
+        self.assertTrue(inventory.is_adoptable(rec()))            # helper sets it True
+        self.assertFalse(inventory.is_adoptable(rec(adoptable=False)))
 
     def test_secret_is_never_adoptable_even_when_editable(self):
-        # secrets carry editable=True (sniffing is skipped), so the flag check
-        # is what protects them — the single most important exclusion.
+        # secrets carry editable=True (sniffing is skipped); safe_to_adopt gates
+        # on the flag directly, so editability can never let one through.
         self.assertFalse(self.adoptable(editable=True, flags=["secret"]))
 
     def test_non_editable_and_dangling_excluded(self):

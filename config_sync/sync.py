@@ -335,16 +335,17 @@ def _adopt_match(rec, names):
     return rec["program"] in names or rec["category"] in names
 
 
-def adopt_candidates(inv, tier, include, exclude, conf_home):
+def adopt_candidates(inv, tier, include, exclude):
     """Entries eligible for the plan at `tier`, after include/exclude. Applies
-    the safety gate and the tier's relevance floor. A config that is already its
-    own git repo is a strong, explicit signal, so it bypasses the floor and
-    surfaces in every tier — flagged `managed` with `adopt` defaulted off (see
-    adopt_plan_rows), for the user to opt in rather than adopt by default."""
+    the safety gate (Entry.adoptable, decided at scan time) and the tier's
+    relevance floor. A config that is already its own git repo is a strong,
+    explicit signal, so it bypasses the floor and surfaces in every tier —
+    flagged `managed` with `adopt` defaulted off (see adopt_plan_rows), for the
+    user to opt in rather than adopt by default."""
     floor = ADOPT_TIERS[tier]
     out = []
     for rec in inv["entries"]:
-        if not is_adoptable(rec, conf_home):
+        if not is_adoptable(rec):
             continue
         if not rec["is_git_repo"] and (rec["relevance"] or 0) < floor:
             continue

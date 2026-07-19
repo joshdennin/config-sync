@@ -70,7 +70,7 @@ config_sync/
   inventory.py  # READ-ONLY engine: Config/load_config, content probes, the
                 #   capture/status_counts/git_record shell-out seam, the scan
                 #   (build_inventory/analyze/score/categorize), the Entry model,
-                #   the is_adoptable gate, and repo path-mapping. Stdlib only.
+                #   the safe_to_adopt gate, and repo path-mapping. Stdlib only.
   report.py     # read-only reporters: listing, json, health — pure functions
   fsops.py      # safe copy/move/symlink/backup/restore — never overwrite/delete
   sync.py       # ALL mutation: manifest + the tidy/adopt/link/unlink actions;
@@ -96,10 +96,10 @@ report │  sync
   the sole home of mutating git (`init`/`add`/`commit`). The safety boundary.
 - `cli` — imports all three and dispatches.
 
-**Why repo mapping lives in `inventory`, manifest in `sync`.** `is_adoptable`
-(read-only) needs `repo_root` to exclude the managed repo, so the repo
-*path-mapping* (`repo_root`, `program_dirname`, `repo_path_for`) is pure path
-logic that stays in `inventory`. The *manifest* (load/save) is used only by the
+**Why repo mapping lives in `inventory`, manifest in `sync`.** `safe_to_adopt`
+(read-only, evaluated during the scan) needs `repo_root` to exclude the managed
+repo, so the repo *path-mapping* (`repo_root`, `program_dirname`,
+`repo_path_for`) is pure path logic that stays in `inventory`. The *manifest* (load/save) is used only by the
 actions and writes through `fsops.ensure_parent`, so it lives in `sync`. This
 keeps `inventory` free of any `fsops`/`sync` import and the graph acyclic.
 
@@ -301,6 +301,7 @@ via_symlink     [link paths that resolved to this entry], or null
 size            bounded byte estimate (dirs: shallow, capped)
 mtime           last-modified (ISO 8601)
 editable        bool   (passed the human-editable filter)
+adoptable       bool   (safe+sensible to copy into the managed repo; safe_to_adopt)
 is_git_repo     bool
 git             sub-record (see above), or null
 program         resolved owning program, or null
@@ -478,16 +479,21 @@ adopt copy) intact. This is the reversibility guarantee made operational.
   `remove_symlink` refuses a non-symlink, `backup` refuses a path outside home,
   and parents are created as needed. Dry-run/reporting lives in the action layer;
   the primitives always act. `ensure_parent` is shared internal support.
-- **`is_adoptable`** is a hard gate for `adopt` (not a display filter). It
-  refuses secrets, dangling links, any non-editable entry (generated / cache /
-  state / noise), and anything at or under the managed repo path.
+- **The adopt safety gate has one source of truth.** `safe_to_adopt` is a pure
+  predicate evaluated **once per entry at scan time** and stored as the
+  `adoptable` field; it refuses secrets, dangling links, any non-editable entry
+  (generated / cache / state / noise), and anything at or under the managed repo
+  path. `adopt` consults it through the thin `is_adoptable(rec)` accessor, which
+  only *reads* the stored bool — no consumer reconstructs the decision. This is
+  deliberate: secrets carry `editable = True` (their content is never sniffed),
+  so deciding adoptability from `editable` downstream would be a latent footgun.
+  Computing it up front, from the raw fields, closes that gap. `editable` is left
+  to mean strictly "human-editable content."
 - **The read-only boundary** is import-enforced: `inventory`/`report` cannot
   reach the write primitives, so `scan`/`health` are read-only by construction.
 
-Known gaps and backlog are tracked in `ISSUES.md` — most notably that secrets
-carry `editable = True` (content sniffing is skipped), so the explicit
-`secret`-flag check in `is_adoptable` is load-bearing and worth replacing with a
-single derived `safe_to_copy` property.
+Remaining backlog (latency on repo-heavy homes, the Arch-only package
+dependency) is tracked in `ISSUES.md`.
 
 ---
 
@@ -498,9 +504,10 @@ single derived `safe_to_copy` property.
   dangling link, a secret dir, noise dirs, binary blobs — scanned via `--root` /
   env overrides.
 - **Shell-out seams.** `pacman` and `git` go through module-level helpers
-  (`capture`, `status_counts`, `git_record`, and a per-repo `_git_cache` cleared
-  per test) so attribution and git-record assembly are unit-tested without the
-  real tools.
+  (`capture`, `status_counts`, `git_record`) so attribution and git-record
+  assembly are unit-tested without the real tools. The per-repo git cache lives
+  on the `Scan` context (one per `build_inventory`), so tests are isolated by
+  construction — no module global to clear between runs.
 - **Pure functions.** Reporters and health checks take records in and strings out,
   so they are tested directly with hand-built records; the manifest/plan I/O and
   the `fsops` guards have their own units.

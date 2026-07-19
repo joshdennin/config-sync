@@ -14,8 +14,6 @@ from .helpers import rec, scan_args
 
 
 class AdoptCandidatesTest(unittest.TestCase):
-    CONF = "/h/.config"
-
     def setUp(self):
         self.inv = {"meta": {}, "entries": [
             rec(program="neovim", category="editor", relevance=95),
@@ -28,7 +26,7 @@ class AdoptCandidatesTest(unittest.TestCase):
 
     def progs(self, tier, include=(), exclude=()):
         cands = sync.adopt_candidates(self.inv, tier, list(include),
-                                           list(exclude), self.CONF)
+                                           list(exclude))
         return {c["program"] for c in cands}
 
     def test_curated_is_strong_signal_only(self):
@@ -430,6 +428,71 @@ class UnlinkTest(unittest.TestCase):
             os.path.join(self.repo, "ghostty"), "dir")
         entry["linked"] = True  # linked, but backup_path stays ""
         self.assertEqual(sync.unlink_status(entry), "unlink-only")
+
+
+class RoundTripTest(unittest.TestCase):
+    """The reversibility promise, end to end: adopt -> link -> unlink must leave
+    each original byte-identical to before adopt, with no symlink or backup left
+    behind and the repo copy still intact. This is the one guarantee the whole
+    tool is built around, so it gets an explicit full-cycle assertion rather than
+    only the per-step coverage above."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.realpath(self.tmp.name)
+        self.conf = os.path.join(self.home, ".config")
+        # A file dotfile and a directory config, each with known bytes.
+        self.originals = {
+            os.path.join(self.home, ".tmux.conf"): b"set -g mouse on\n",
+            os.path.join(self.conf, "ghostty/config"): b"theme=dark\npad=4\n",
+        }
+        for path, data in self.originals.items():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+        self.cfg = inventory.load_config(inventory.default_config_path())
+        p = mock.patch.object(sync, "git_init", lambda repo: True)  # stay hermetic
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_adopt_link_unlink_restores_byte_identical(self):
+        plan = {"version": 1, "tier": "everything", "entries": [
+            {"program": "tmux", "category": "", "adopt": True,
+             "paths": [{"home": "~/.tmux.conf", "repo": ""}]},
+            {"program": "ghostty", "category": "", "adopt": True,
+             "paths": [{"home": "~/.config/ghostty", "repo": ""}]},
+        ]}
+        sync.adopt_apply(plan, self.home, self.conf, self.cfg)
+        sync.link_apply(sync.load_manifest(self.conf, self.home), self.home, self.conf)
+
+        # After link: each home path is now a symlink resolving into the repo.
+        tmux = os.path.join(self.home, ".tmux.conf")
+        ghostty = os.path.join(self.conf, "ghostty")
+        for link in (tmux, ghostty):
+            self.assertTrue(os.path.islink(link))
+            self.assertTrue(os.path.realpath(link).startswith(self.repo() + os.sep))
+
+        result = sync.unlink_apply(sync.load_manifest(self.conf, self.home),
+                                   self.home, self.conf)
+        self.assertEqual(set(result["restored"]), {tmux, ghostty})
+
+        # After unlink: originals are back, byte-for-byte, and are real files/dirs.
+        self.assertFalse(os.path.islink(tmux))
+        self.assertFalse(os.path.islink(ghostty))
+        self.assertEqual(open(tmux, "rb").read(), self.originals[tmux])
+        self.assertEqual(open(os.path.join(ghostty, "config"), "rb").read(),
+                         self.originals[os.path.join(self.conf, "ghostty/config")])
+
+        # No symlink or backup left behind; the repo copy survives (adopt is a copy).
+        backups = sync.backups_root(self.conf)
+        self.assertFalse(os.path.exists(os.path.join(backups, ".tmux.conf")))
+        self.assertFalse(os.path.exists(os.path.join(backups, ".config/ghostty")))
+        self.assertTrue(os.path.isfile(os.path.join(self.repo(), "tmux/.tmux.conf")))
+        self.assertTrue(os.path.isfile(os.path.join(self.repo(), "ghostty/config")))
+
+    def repo(self):
+        return os.path.join(self.conf, "config-sync")
 
 
 class ManifestTest(unittest.TestCase):

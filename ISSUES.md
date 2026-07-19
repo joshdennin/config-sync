@@ -1,48 +1,51 @@
 # Tracked issues
 
-Backlog from the code review. The four higher-priority items (link atomicity,
-`die()` from the library layer, leading-underscore cross-module names, and the
-three home-abbreviation helpers) have been fixed; what remains is captured here.
+Backlog from the code review. Resolved items are kept (struck through with a
+resolution note) so the history of the review stays legible; the open items
+follow.
 
 ---
 
-## 1. Secrets carry `editable = True` — a load-bearing footgun
+## 1. Secrets carry `editable = True` — a load-bearing footgun ✅ RESOLVED
 
 **Where:** `inventory.py` `analyze` (sets `editable=True` for secrets because
 content sniffing is skipped) and `is_adoptable` (re-excludes them explicitly).
 
 **Problem:** A secret entry is marked `editable=True`, so the *only* thing
-keeping it out of `adopt` is the explicit `"secret" in rec["flags"]` check at
-the top of `is_adoptable` — which its own comment calls "the single most
-important exclusion." The safety of the whole tool therefore rests on every
+keeping it out of `adopt` was the explicit `"secret" in rec["flags"]` check at
+the top of `is_adoptable`. The safety of the whole tool therefore rested on every
 current and future consumer of `editable` remembering that, for secrets, the
 flag means the opposite of what it reads like. A comment is not a guardrail.
 
 **Impact:** High if it ever regresses (a secret store copied into a synced
 repo), low probability today. It is a latent trap, not a live bug.
 
-**Suggested fix:** Compute a single derived property — e.g. `adoptable` /
-`safe_to_copy` — once at scan time, folding in the secret/dangling/location
-gate, so no downstream caller can reconstruct the decision incorrectly. Leave
-`editable` to mean strictly "human-editable content" and stop overloading it for
-the safety decision.
+**Resolution:** The gate is now a pure predicate, `safe_to_adopt(location, flags,
+editable, real_path, conf_home)`, evaluated **once per entry at scan time** and
+stored as the new `Entry.adoptable` field. `is_adoptable(rec)` is a thin accessor
+that only reads that bool — no downstream code reconstructs the decision from
+`editable`, which is left to mean strictly "human-editable content." A live scan
+confirms no `secret`-flagged entry is ever `adoptable`. Covered by
+`AdoptableTest` (predicate) and `test_is_adoptable_reads_the_stored_decision`.
 
 ---
 
-## 2. Module-level `_git_cache` global
+## 2. Module-level `_git_cache` global ✅ RESOLVED
 
 **Where:** `inventory.py:_git_cache` (module-level dict), populated by
 `git_record`.
 
-**Problem:** Unbounded shared mutable state at module scope. It is correct for a
-single CLI invocation, but tests already have to `mock.patch.dict(...,
-clear=True)` to isolate from each other, which is the tell.
+**Problem:** Unbounded shared mutable state at module scope. It was correct for a
+single CLI invocation, but tests had to `mock.patch.dict(..., clear=True)` to
+isolate from each other, which is the tell.
 
 **Impact:** Low. No user-visible bug; a maintainability/testability smell.
 
-**Suggested fix:** Thread the cache through the scan context (pass it into
-`build_inventory` / `git_record`, or hang it off `Config`) so its lifetime is
-scoped to one scan rather than the process.
+**Resolution:** The cache now lives on a per-scan `Scan` context dataclass (home,
+config root, pacman set, `Config`, and `git_cache`), built once in
+`build_inventory` and threaded through `analyze` → `git_record(anchor, cache)`.
+Its lifetime is scoped to one scan; the module global is gone and the test that
+cleared it was removed — scans are isolated by construction.
 
 ---
 
@@ -115,19 +118,21 @@ surfaced as a README.
 
 ---
 
-## 7. End-to-end round-trip test gap
+## 7. End-to-end round-trip test gap ✅ RESOLVED
 
-**Where:** `tests/` — unit coverage of the pure logic is good, but there is no
+**Where:** `tests/` — unit coverage of the pure logic is good, but there was no
 test that drives `adopt → link → unlink` on a real temp filesystem and asserts
 the original is byte-identical after restore.
 
 **Problem:** The reversibility guarantee is the tool's central promise, and it
-is only covered piecewise. (The link partial-failure path is now covered by
-`test_failed_symlink_rolls_back_the_backup`; the full happy-path round trip is
+was only covered piecewise. (The link partial-failure path is covered by
+`test_failed_symlink_rolls_back_the_backup`; the full happy-path round trip was
 still worth an explicit assertion.)
 
 **Impact:** Medium — this is exactly where a durability regression would hide.
 
-**Suggested fix:** Add an integration test: adopt a small tree, link it, unlink
-it, and assert the restored original matches the pre-adopt bytes and the
-symlink/backup are gone.
+**Resolution:** `RoundTripTest.test_adopt_link_unlink_restores_byte_identical`
+adopts a file dotfile and a directory config into a temp home, links them
+(asserting each home path becomes a symlink into the repo), unlinks them, and
+asserts both originals are back byte-for-byte, are real files/dirs again, and
+that no symlink or backup is left behind while the repo copies survive.
