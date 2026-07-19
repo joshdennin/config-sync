@@ -76,7 +76,7 @@ class AdoptPlanIOTest(unittest.TestCase):
         self.assertEqual(e["paths"], [{"home": "~/.tmux.conf",
                                        "repo": "tmux/.tmux.conf"}])  # relative to repo
         self.assertTrue(e["adopt"])
-        self.assertFalse(e["managed"])  # a plain (non-versioned) config
+        self.assertNotIn("managed", e)  # not a written field — a plain config has no comment
 
     def test_versioned_config_is_managed_and_not_adopted_by_default(self):
         cfg = inventory.Config(programs={"neovim": {"paths": ["nvim"], "bin": "nvim"}})
@@ -87,6 +87,12 @@ class AdoptPlanIOTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["managed"])   # flagged as already versioned
         self.assertFalse(rows[0]["adopt"])    # opt-in, not adopted by default
+        # In the written plan the managed state is a comment, not an editable field.
+        sync.write_adopt_plan(self.path, rows, "curated", "~/.config/config-sync")
+        with open(self.path) as f:
+            text = f.read()
+        self.assertIn("# already tracked in its own git repo", text)
+        self.assertNotIn("managed =", text)
 
     def test_rows_group_by_program_and_order_by_category(self):
         # One entry per program; category order follows first appearance (health's
@@ -619,6 +625,77 @@ class SyncTest(unittest.TestCase):
         actions = {e["program"]: action for e, _, action in rows}
         self.assertEqual(actions["ghostty"], "unlink")  # gone + config-sync's symlink
         self.assertEqual(actions["tmux"], "done")       # installed, already linked
+
+
+class RepoHealthTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = os.path.realpath(self.tmp.name)
+        self.conf = os.path.join(self.home, ".config")
+        self.repo = os.path.join(self.conf, "config-sync")
+
+    def texts(self, health):
+        return [t for _, t, _ in health["findings"]]
+
+    def sevs(self, health):
+        return [s for s, _, _ in health["findings"]]
+
+    def build_repo(self, linked=False):
+        # Simulate a completed adopt: repo content + original in place + manifest.
+        for base in (os.path.join(self.repo, "ghostty"), os.path.join(self.conf, "ghostty")):
+            os.makedirs(base)
+            with open(os.path.join(base, "config"), "w") as f:
+                f.write("theme=dark\n")
+        m = sync.empty_manifest()
+        m["entries"].append(sync.manifest_entry(
+            "ghostty", os.path.join(self.conf, "ghostty"),
+            os.path.join(self.repo, "ghostty"), "dir"))
+        sync.save_manifest(self.conf, m, self.home)
+        if linked:
+            sync.link_apply(sync.load_manifest(self.conf, self.home), self.home, self.conf)
+
+    def test_missing_repo_is_reported(self):
+        health = sync.repo_health(self.conf, self.home)
+        self.assertFalse(health["exists"])
+        self.assertTrue(any("no managed repo" in t for t in self.texts(health)))
+
+    def test_non_git_repo_warns(self):
+        self.build_repo()
+        health = sync.repo_health(self.conf, self.home)
+        self.assertTrue(health["exists"])
+        self.assertTrue(any("not a git repo" in t for t in self.texts(health)))
+
+    def test_adopted_but_unlinked_is_flagged(self):
+        self.build_repo(linked=False)
+        health = sync.repo_health(self.conf, self.home)
+        self.assertTrue(any("adopted but not linked" in t for t in self.texts(health)))
+        self.assertIn("0/1 adopted config(s) linked into place", self.texts(health))
+
+    def test_linked_config_counts_as_in_place(self):
+        self.build_repo(linked=True)
+        health = sync.repo_health(self.conf, self.home)
+        self.assertIn("1/1 adopted config(s) linked into place", self.texts(health))
+        self.assertFalse(any("adopted but not linked" in t for t in self.texts(health)))
+
+    def test_git_state_surfaces_branch_and_uncommitted(self):
+        os.makedirs(os.path.join(self.repo, ".git"))
+        self.build_repo()
+
+        def fake_capture(cmd, cwd=None):
+            args = cmd[cmd.index("-C") + 2:]  # drop ["git", "-C", repo]
+            if args[:2] == ["symbolic-ref", "--short"]:
+                return "main"
+            if args[:1] == ["rev-parse"] and "HEAD" in args:
+                return "abc123"  # HEAD resolves — repo has commits
+            return None
+
+        with mock.patch.object(sync, "capture", side_effect=fake_capture), \
+                mock.patch.object(sync, "status_counts",
+                                  return_value={"modified": 2, "untracked": 1}):
+            health = sync.repo_health(self.conf, self.home)
+        self.assertTrue(any("git branch main" in t for t in self.texts(health)))
+        self.assertTrue(any("3 uncommitted changes" in t for t in self.texts(health)))
 
 
 class TidyTest(unittest.TestCase):

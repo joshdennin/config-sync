@@ -32,7 +32,7 @@ equivalent.
 | Command | What it does | Writes? |
 |---------|--------------|---------|
 | `scan` | Discover config entries, classify them, print a report (`--json` to stdout). | inventory file, only with `--out` |
-| `health` | Render a `:checkhealth`-style report from a saved `scan --out`. | no |
+| `health` | Render a `:checkhealth`-style report from a saved `scan --out`, plus the live state of the managed repo and whether each adopted config is linked. | no |
 | `tidy` | Relocate a safe set of `$HOME` config files into `~/.config`. | only with `--move` |
 | `plan` | Scan and write an editable plan of the configs to adopt. | the plan file |
 | `adopt` | Copy the plan's chosen configs into the managed repo and `git init` it. | yes |
@@ -157,9 +157,9 @@ consistently. Existing captured copies are never overwritten.
   directory it strips `.git`, `.gitignore`, `.venv`, and `__pycache__`, so a
   version-controlled config doesn't nest a repo and no virtualenv/bytecode noise
   comes along.
-- Configs that are already their own git repo are surfaced in the plan flagged
-  `managed = true` with `adopt = false` — visible for review but opt-in, never
-  copied unless you turn `adopt` on.
+- Configs that are already their own git repo are surfaced in the plan with
+  `adopt = false` and a comment noting they are already tracked elsewhere —
+  visible for review but opt-in, never copied unless you turn `adopt` on.
 - `adopt` refuses to add to a repo that already holds adopted content
   (protecting a shared/cloned repo) unless given `--force`.
 - `link` backs up before it symlinks and is atomic — a failed link restores the

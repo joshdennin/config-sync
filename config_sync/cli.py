@@ -4,7 +4,9 @@ scan   — discover config entries under home, classify them, print a report; wi
          --json, stream the structured inventory to stdout; with --out, write it
          to a file (default <repo>/inventory.json) instead
 health — read a saved `scan --json` inventory (default <repo>/inventory.json) and
-         print a Markdown checkhealth-style report (inspired by :checkhealth)
+         print a Markdown checkhealth-style report (inspired by :checkhealth),
+         including the live state of the managed repo (built? committed?) and
+         whether each adopted config is currently linked into place
 tidy   — report (and with --move, perform) safe XDG relocations of a
          conservative "Tier 1" set of HOME config files into ~/.config
 plan   — scan and write an editable plan of discovered configs (curated/extended/
@@ -83,9 +85,9 @@ from .sync import (ADOPT_TIERS, LINK_STATUS, SYNC_STATUS, UNLINK_STATUS,
                    adopt_apply, adopt_candidates, adopt_plan_rows,
                    default_plan_path, ensure_repo_scaffold, link_apply,
                    link_report, link_survey, load_adopt_plan, load_manifest,
-                   omitted_programs, sync_apply, sync_report, sync_survey,
-                   tidy_move, tidy_report, tidy_survey, unlink_apply,
-                   unlink_report, unlink_survey, write_adopt_plan)
+                   omitted_programs, repo_health, sync_apply, sync_report,
+                   sync_survey, tidy_move, tidy_report, tidy_survey,
+                   unlink_apply, unlink_report, unlink_survey, write_adopt_plan)
 
 
 def cmd_scan(args):
@@ -128,6 +130,9 @@ def cmd_health(args):
         die(f"{path!r} is not a valid inventory "
             "(expected the {meta, entries} object written by `scan --json`)")
     args.inventory = tilde(path, home)  # the health report labels itself the source
+    # Live status of the managed repo and its symlinks, checked here-and-now
+    # (the saved inventory can't carry it — it may have been scanned elsewhere).
+    args.repo_status = repo_health(config_home(home), home)
     sys.stdout.write(REPORTERS["health"](inv, args))
     return 0
 

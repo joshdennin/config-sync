@@ -182,14 +182,14 @@ def section_findings(recs):
 SEV_ICON = {"OK": "✅", "INFO": "ℹ️", "WARN": "⚠️", "ERROR": "❌"}
 
 # Command-shaped suggestions get wrapped in inline code; prose is left plain.
-_CMD_PREFIXES = ("git ", "pacman ", "rm ", "ln ", "cp ", "mv ")
+_CMD_PREFIXES = ("git ", "pacman ", "rm ", "ln ", "cp ", "mv ", "config-sync ")
 
 
 def md_suggestion(text):
     return f"`{text}`" if text.startswith(_CMD_PREFIXES) else text
 
 
-def render_health(inv, source, cfg=Config()):
+def render_health(inv, source, cfg=Config(), repo=None):
     sections = {}  # section title -> records, in inventory order; unattributed last
     for rec in inv["entries"]:
         sections.setdefault(section_key(rec, cfg) or "unattributed", []).append(rec)
@@ -217,6 +217,15 @@ def render_health(inv, source, cfg=Config()):
     # Uncategorized (and the unattributed section it holds) always sorts last.
     ordered_cats = [c for c in ordered_categories(inv["entries"]) if c in groups]
 
+    # Live repo/symlink findings (gathered by the CLI, not from the inventory)
+    # count toward the summary and surface in "Needs attention" like any other.
+    repo_findings = repo["findings"] if repo else []
+    for sev, _, _ in repo_findings:
+        totals[sev] += 1
+    repo_bad = [t for s, t, _ in repo_findings if s in ("WARN", "ERROR")]
+    if repo_bad:
+        attention.append(("managed repo", "; ".join(repo_bad)))
+
     meta = inv.get("meta", {})
     out = [
         "# config inventory — health check",
@@ -237,6 +246,14 @@ def render_health(inv, source, cfg=Config()):
     if attention:
         out += ["### Needs attention", ""]
         out += [f"- **{n}** — {msg}" for n, msg in attention]
+        out.append("")
+
+    if repo_findings:
+        out += ["## Managed repo", ""]
+        for sev, text, suggestion in repo_findings:
+            out.append(f"- {SEV_ICON[sev]} {text}")
+            if suggestion:
+                out.append(f"  - ↳ {md_suggestion(suggestion)}")
         out.append("")
 
     for cat in ordered_cats:
@@ -260,7 +277,8 @@ def report_json(inv, args=None, cfg=None):
 
 
 def report_health(inv, args, cfg=Config()):
-    return render_health(inv, getattr(args, "inventory", "?"), cfg)
+    return render_health(inv, getattr(args, "inventory", "?"), cfg,
+                         getattr(args, "repo_status", None))
 
 
 REPORTERS = {

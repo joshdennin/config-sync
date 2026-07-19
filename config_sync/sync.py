@@ -17,10 +17,10 @@ import tomli_w
 
 from .fsops import (FsError, backup, ensure_parent, remove_symlink, restore,
                     safe_copy, safe_move, safe_symlink)
-from .inventory import (CONFIG_NAME, INVENTORY_NAME, UNCATEGORIZED,
+from .inventory import (CONFIG_NAME, INVENTORY_NAME, UNCATEGORIZED, capture,
                         check_installed, default_config_path, die, display_path,
                         is_adoptable, ordered_categories, repo_config_path,
-                        repo_path_for, repo_root, tilde)
+                        repo_path_for, repo_root, status_counts, tilde)
 
 
 # --------------------------------------------------------------------------
@@ -414,20 +414,38 @@ def _omitted_comment(omitted, tier):
     return intro + body + "\n"
 
 
+# Comment marking an entry whose config is already its own git repo. It is not a
+# configurable field — the state is discovered, not chosen — so it reads as a
+# comment above the entry rather than a `managed = …` key the user might edit.
+_MANAGED_COMMENT = (b"# already tracked in its own git repo "
+                    b"(adopt defaults off; set it true to copy in anyway)\n")
+
+
 def write_adopt_plan(path, rows, tier, repo, omitted=()):
     header = (f'# config-sync adopt plan — "{tier}" tier, {datetime.now():%Y-%m-%d}\n'
               "# Edit before applying: set adopt = false (or remove a path, or\n"
               "# delete a block) to skip it. Each entry is one program; paths lists\n"
               "# every file/dir it owns as { home = where it lives now, repo = its\n"
-              "# path inside the repo (below) }. managed = true marks a config that\n"
-              "# is already its own git repo; adopt is off for those by default —\n"
+              "# path inside the repo (below) }. A program already tracked in its\n"
+              "# own git repo is marked with a comment and defaults adopt = false —\n"
               "# set adopt = true to copy it in anyway.\n"
               f"# Then run:  config-sync adopt {path}\n"
               + _omitted_comment(omitted, tier) + "\n")
-    data = {"version": ADOPT_PLAN_VERSION, "tier": tier, "repo": repo, "entries": rows}
+    # Entries are dumped one at a time (each a valid [[entries]] block that TOML
+    # appends to the array) so a per-entry comment can precede a managed one.
+    # `managed` drives the comment but is not itself written to the file.
+    meta = {"version": ADOPT_PLAN_VERSION, "tier": tier, "repo": repo}
+    if not rows:
+        meta["entries"] = []  # keep the key present so an empty plan still loads
     with open(path, "wb") as f:
         f.write(header.encode())
-        tomli_w.dump(data, f)
+        tomli_w.dump(meta, f)
+        for row in rows:
+            f.write(b"\n")
+            if row.get("managed"):
+                f.write(_MANAGED_COMMENT)
+            tomli_w.dump({"entries": [{k: v for k, v in row.items()
+                                       if k != "managed"}]}, f)
     return path
 
 
@@ -797,3 +815,106 @@ def unlink_report(rows, home, applied=False):
         print()
         print(f"{todo} to restore · run with --apply to undo the links."
               if todo else "Nothing to unlink.")
+
+
+# --------------------------------------------------------------------------
+# Repo health — live status of the managed repo and the symlinks config-sync
+# manages, gathered for the `health` report. Unlike the inventory (a snapshot
+# that may have been taken on another machine), this reads the repo and the
+# filesystem here and now, so it answers "has the repo been built, is it
+# committed/pushed, and are the adopted configs actually linked into place?".
+# It returns a plain findings dict (no rendering), keeping report.py free of any
+# sync/fsops import; the CLI hands the result to the health reporter.
+
+def _repo_git_state(repo):
+    """Read-only git snapshot of the managed repo: current branch, whether it
+    has any commits yet, dirty counts, and ahead/behind vs its upstream. Every
+    query goes through the read-only `capture` seam."""
+    def g(*args):
+        return capture(["git", "-C", repo, *args])
+
+    branch = g("symbolic-ref", "--short", "HEAD") or "(detached)"  # works pre-commit
+    no_commits = g("rev-parse", "--verify", "--quiet", "HEAD") is None
+    counts = status_counts(repo) or {}
+    ahead = behind = None
+    if g("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"):
+        c = g("rev-list", "--left-right", "--count", "HEAD...@{u}")
+        if c:
+            ahead, behind = (int(n) for n in c.split())
+    return {"branch": branch, "no_commits": no_commits,
+            "modified": counts.get("modified", 0),
+            "untracked": counts.get("untracked", 0),
+            "ahead": ahead, "behind": behind}
+
+
+def _link_findings(entry, home):
+    """Health findings for one adopted entry's symlink, from its live link status.
+    `linked` is the machine-local record; link_status re-reads the filesystem, so
+    the two disagreeing is itself a finding (a link removed or replaced by hand)."""
+    hp = tilde(entry["home_path"], home)
+    prog = entry["program"] or os.path.basename(entry["home_path"])
+    status = link_status(entry)
+    if status == "done":
+        return "done", []
+    if status == "no-source":
+        return status, [("ERROR", f"{hp}: repo copy missing ({prog})", None)]
+    if status == "conflict":
+        return status, [("WARN", f"{hp} is a symlink pointing outside the repo "
+                         f"({prog})", None)]
+    # A real file or an absent original — not linked. If link state claims it is,
+    # the symlink was removed/replaced by hand; otherwise it is simply not linked.
+    if entry.get("linked"):
+        return status, [("WARN", f"{hp} is recorded as linked but is not the "
+                         f"symlink config-sync made ({prog})", "config-sync link --apply")]
+    return status, [("INFO", f"{hp} adopted but not linked ({prog})",
+                     "config-sync link --apply")]
+
+
+def repo_health(conf_home, home):
+    """Live health of the managed repo and its symlinks. Returns
+    {path, exists, findings} where findings is [(severity, text, suggestion|None)]
+    in the same shape section_findings produces, so the reporter renders it
+    uniformly. Never writes."""
+    repo = repo_root(conf_home)
+    disp = tilde(repo, home)
+    if not os.path.isdir(repo):
+        return {"path": disp, "exists": False, "findings": [
+            ("INFO", f"no managed repo at {disp} yet — `config-sync plan` then "
+             "`config-sync adopt` builds one", "config-sync plan")]}
+
+    findings = []
+    if os.path.isdir(os.path.join(repo, GIT_DIR)):
+        git = _repo_git_state(repo)
+        findings.append(("OK", f"managed repo at {disp} (git branch {git['branch']})",
+                         None))
+        if git["no_commits"]:
+            findings.append(("WARN", "repo has no commits yet",
+                             f"git -C {disp} add -A && git commit -m 'adopt configs'"))
+        n = git["modified"] + git["untracked"]
+        if n and not git["no_commits"]:
+            findings.append(("WARN", f"{n} uncommitted change{'s' if n != 1 else ''} "
+                             "in the repo", f"git -C {disp} status"))
+        if git["ahead"]:
+            findings.append(("INFO", f"{git['ahead']} commit(s) not pushed",
+                             f"git -C {disp} push"))
+        if git["behind"]:
+            findings.append(("INFO", f"{git['behind']} commit(s) behind upstream",
+                             f"git -C {disp} pull"))
+    else:
+        findings.append(("WARN", f"managed repo at {disp} is not a git repo "
+                         "(adopt normally git-inits it)", "config-sync adopt"))
+
+    entries = load_manifest(conf_home, home)["entries"]
+    if not entries:
+        findings.append(("INFO", "no configs adopted into the repo yet", None))
+    else:
+        linked = 0
+        for e in entries:
+            status, fs = _link_findings(e, home)
+            findings += fs
+            if status == "done":
+                linked += 1
+        findings.append(("OK" if linked == len(entries) else "INFO",
+                         f"{linked}/{len(entries)} adopted config(s) linked into place",
+                         None))
+    return {"path": disp, "exists": True, "findings": findings}

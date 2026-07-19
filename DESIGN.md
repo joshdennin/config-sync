@@ -32,9 +32,13 @@ That one invariant keeps the inspection core provably read-only.
 `--json` inventory always contains *every* discovered entry with its flags;
 `--generated`, `--secrets`, `--only-orphans`, and `--min-relevance` only shape
 the human-readable listing. Inventories stay complete and comparable across runs
-regardless of which flags were active, and `health` can work as a pure function
-of the stored records (its secret and dangling checks depend on those entries
-being present).
+regardless of which flags were active, and `health`'s inventory checks work as a
+pure function of the stored records (its secret and dangling checks depend on
+those entries being present). `health` also overlays a small *live* check — the
+managed repo's git state and whether each adopted config is currently linked —
+which the CLI gathers on the spot (it can't come from an inventory that may have
+been scanned on another machine) and hands to the reporter as plain findings, so
+`report.py` still imports neither `fsops` nor `sync`.
 
 **Human-editable config is the default lens.** `~/.config` and `$HOME` are full
 of caches, state, logs, lock files, databases, and binary blobs. The default
@@ -131,7 +135,7 @@ without `--apply`.
 | Command | Role |
 |---------|------|
 | `scan` | Inspect the system and emit an inventory (default: human listing; `--json`: full structured record to stdout; `--out`: that record to a file). |
-| `health` | Read a saved `scan --out` inventory (default `<repo>/inventory.json`) and render a Markdown `:checkhealth`-style report. Never scans. |
+| `health` | Read a saved `scan --out` inventory (default `<repo>/inventory.json`) and render a Markdown `:checkhealth`-style report, plus a live "Managed repo" section (repo built/committed? each adopted config linked?). Never scans. |
 | `tidy` | Report (and with `--move`, perform) a conservative set of transparent XDG relocations of `$HOME` config files into `~/.config`. |
 | `plan` | Scan discovered configs and write an editable adopt plan. Copies nothing. |
 | `adopt` | Read the (edited) plan and materialize the repo: copy the plan's entries in, write the manifest, `git init` (never commit). |
@@ -428,8 +432,10 @@ reads the edited plan and materializes the repo.
 Tiers seed the plan on top of the always-on `is_adoptable` gate, as a tunable
 relevance floor: `curated` (≥ 50, default), `extended` (≥ 15), `everything`
 (≥ 0). An entry already its own git repo bypasses the floor and is surfaced
-flagged `managed = true` with `adopt = false` — visible for review but opt-in,
-never copied unless the user turns `adopt` on. `--include` / `--exclude`
+with `adopt = false` and a comment marking it as already tracked in its own repo
+(the managed state is discovered, not chosen, so it is a comment rather than an
+editable field) — visible for review but opt-in, never copied unless the user
+turns `adopt` on. `--include` / `--exclude`
 (program or category names) pre-narrow candidates; the plan's per-entry
 `adopt = true/false` is the final say. `adopt` **copies** each `adopt=true`
 entry into the repo via `fsops` (originals untouched), merges the manifest, and
