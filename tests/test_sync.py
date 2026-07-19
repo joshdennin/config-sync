@@ -254,6 +254,16 @@ class GitInitTest(unittest.TestCase):
         self.assertNotEqual(head.returncode, 0)                   # no HEAD -> no commit
 
 
+class GitInitMissingGitTest(unittest.TestCase):
+    def test_noop_when_git_not_installed(self):
+        # git_init must degrade gracefully when git is absent (never reach the
+        # subprocess call, which would raise FileNotFoundError and crash adopt).
+        with mock.patch.object(sync.shutil, "which", return_value=None), \
+                mock.patch.object(sync.subprocess, "run",
+                                  side_effect=AssertionError("git must not run")):
+            self.assertFalse(sync.git_init("/nonexistent"))
+
+
 class LinkTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

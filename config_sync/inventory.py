@@ -659,6 +659,7 @@ def display_path(rec):
 # itself (its tree copied in); a file entry maps to a file beneath it.
 
 REPO_DIRNAME = "config-sync"  # the managed repo, under ~/.config
+INVENTORY_NAME = "inventory.json"  # default `scan --json` output / `health` input
 
 
 def repo_root(conf_home):
@@ -670,6 +671,12 @@ def repo_config_path(conf_home):
     it there so a clone carries the registry it was built with; repo-centric
     commands (`sync`) prefer it over the package copy."""
     return os.path.join(repo_root(conf_home), CONFIG_NAME)
+
+
+def repo_inventory_path(conf_home):
+    """Where `scan --json` writes the inventory and `health` reads it by default —
+    inside the managed repo, alongside the plan and captured config."""
+    return os.path.join(repo_root(conf_home), INVENTORY_NAME)
 
 
 def program_dirname(program, cfg):

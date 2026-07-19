@@ -1,14 +1,17 @@
 """config-sync — inventory, health, and dotfiles-repo management for Arch/CachyOS.
 
-scan   — discover config entries under home, classify them, print a report
-health — read a saved `scan --json` inventory and print a Markdown
-         checkhealth-style report (inspired by Neovim's :checkhealth)
+scan   — discover config entries under home, classify them, print a report; with
+         --json, stream the structured inventory to stdout; with --out, write it
+         to a file (default <repo>/inventory.json) instead
+health — read a saved `scan --json` inventory (default <repo>/inventory.json) and
+         print a Markdown checkhealth-style report (inspired by :checkhealth)
 tidy   — report (and with --move, perform) safe XDG relocations of a
          conservative "Tier 1" set of HOME config files into ~/.config
-adopt  — write an editable plan of discovered configs (curated/extended/
-         everything tier); with --apply, copy the plan's entries into the
-         managed repo at ~/.config/config-sync/, write the manifest, and
-         `git init` the repo (staging/commit/push are left to you)
+plan   — scan and write an editable plan of discovered configs (curated/extended/
+         everything tier) to <repo>/config-sync-adopt.toml; copies nothing
+adopt  — read the (edited) plan and build the managed repo at ~/.config/config-sync/:
+         copy the plan's entries in, write the manifest, and `git init` the repo
+         (staging/commit/push are left to you)
 link   — report (and with --apply, perform) symlinking of adopted configs from
          the repo back into place, backing up each original first
 sync   — deploy a repo (typically cloned from another machine): report (and with
@@ -19,7 +22,9 @@ unlink — reverse `link`: report (and with --apply, perform) removing the
          symlinks and restoring the backed-up originals
 
 scan flags:
-  --json               emit the complete structured inventory to stdout
+  --json               stream the complete structured inventory to stdout
+  --out [PATH]         write the JSON inventory to a file instead of stdout
+                       (bare --out uses <repo>/inventory.json)
   --generated          show machine-generated entries in the listing
   --all                also scan the state and cache roots (implies --generated)
   --secrets            show secret-flagged entries in the listing
@@ -29,17 +34,20 @@ scan flags:
   --config PATH        TOML config with the classification tables
 
 health arguments:
-  inventory            path to an inventory file written by `scan --json`
+  inventory            inventory written by `scan --json` (default <repo>/inventory.json)
 
 tidy flags:
   --move               move the safe candidates into ~/.config (default: report)
 
-adopt flags:
+plan flags:
+  plan                 plan file to write (default <repo>/config-sync-adopt.toml)
   --select TIER        plan breadth: curated | extended | everything (default curated)
   --include NAME       restrict the plan to these programs/categories (repeatable)
   --exclude NAME       drop these programs/categories from the plan (repeatable)
-  --plan PATH          plan file to write, then read with --apply
-  --apply              build the repo from the (edited) plan
+  --config PATH        TOML classification config
+
+adopt flags:
+  plan                 plan file to read (default <repo>/config-sync-adopt.toml)
   --force              adopt into an already-populated (e.g. cloned) repo
   --config PATH        TOML classification config
 
@@ -51,12 +59,13 @@ sync flags:
   --force              link every config, even ones whose program is absent here
   --config PATH        TOML config (default: the repo's captured copy)
 
-`scan` and `health` never write, move, or delete anything; their only side
-effects are filesystem reads and read-only `pacman` / `git` queries. `tidy` is
-read-only unless given --move; `adopt` is read-only unless given --apply (it
-only writes a plan file otherwise). Every write goes through the fsops
-primitives, which refuse to overwrite or delete: `adopt` copies (originals are
-left untouched) and `tidy --move` only relocates when the target is absent.
+Discovery never writes, moves, or deletes your configs; the only side effects are
+filesystem reads, read-only `pacman` / `git` queries, and the artifacts commands
+write on request (`scan --out`'s inventory file, `plan`'s plan file). `tidy` is
+read-only unless given --move; `link`/`sync`/`unlink` are read-only unless given
+--apply. Every config mutation goes through the fsops primitives, which refuse to
+overwrite or delete: `adopt` copies (originals are left untouched) and `tidy
+--move` only relocates when the target is absent.
 """
 
 import argparse
@@ -67,7 +76,8 @@ import sys
 
 from .inventory import (ConfigSyncError, build_inventory, config_home,
                         default_config_path, die, load_config, load_pacman_qq,
-                        repo_config_path, repo_root, require_home, tilde)
+                        repo_config_path, repo_inventory_path, repo_root,
+                        require_home, tilde)
 from .report import REPORTERS
 from .sync import (ADOPT_TIERS, LINK_STATUS, SYNC_STATUS, UNLINK_STATUS,
                    adopt_apply, adopt_candidates, adopt_plan_rows,
@@ -79,25 +89,45 @@ from .sync import (ADOPT_TIERS, LINK_STATUS, SYNC_STATUS, UNLINK_STATUS,
 
 
 def cmd_scan(args):
-    home = require_home()
+    home = os.path.abspath(require_home())
     if shutil.which("pacman") is None:
         die("pacman not found on PATH — this tool needs Arch's pacman for "
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
     cfg = load_config(args.config or default_config_path())
-    inv = build_inventory(args, os.path.abspath(home), cfg)
-    print(REPORTERS["json" if args.json else "listing"](inv, args, cfg))
+    inv = build_inventory(args, home, cfg)
+    # --out (with or without a path) implies the JSON inventory; --json alone
+    # streams it to stdout; neither prints the human listing.
+    if args.out is None and not args.json:
+        print(REPORTERS["listing"](inv, args, cfg))
+        return 0
+    out = REPORTERS["json"](inv, args, cfg)
+    if args.out is None:  # --json without --out: stream to stdout (e.g. `| jq`)
+        print(out)
+        return 0
+    path = args.out or repo_inventory_path(config_home(home))  # --out alone: repo default
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(out + "\n")
+    n = len(inv["entries"])
+    print(f"Wrote inventory ({n} {'entry' if n == 1 else 'entries'}) to {tilde(path, home)}.")
     return 0
 
 
 def cmd_health(args):
+    home = os.path.abspath(require_home())
+    path = args.inventory or repo_inventory_path(config_home(home))
     try:
-        with open(args.inventory) as f:
+        with open(path) as f:
             inv = json.load(f)
+    except FileNotFoundError:
+        die(f"inventory not found: {tilde(path, home)}\n"
+            "  run `config-sync scan --json` first to write one")
     except (OSError, json.JSONDecodeError) as e:
-        die(f"cannot read inventory {args.inventory!r}: {e}")
+        die(f"cannot read inventory {path!r}: {e}")
     if not isinstance(inv, dict) or not isinstance(inv.get("entries"), list):
-        die(f"{args.inventory!r} is not a valid inventory "
+        die(f"{path!r} is not a valid inventory "
             "(expected the {meta, entries} object written by `scan --json`)")
+    args.inventory = tilde(path, home)  # the health report labels itself the source
     sys.stdout.write(REPORTERS["health"](inv, args))
     return 0
 
@@ -112,34 +142,15 @@ def cmd_tidy(args):
     return 0
 
 
-def cmd_adopt(args):
+def cmd_plan(args):
+    # Scan, filter to the tier, and write the editable plan (copies nothing).
     home = os.path.abspath(require_home())
     conf = config_home(home)
-    cfg = load_config(args.config or default_config_path())
-    plan_path = args.plan or default_plan_path(conf)
-    if args.apply:
-        result = adopt_apply(load_adopt_plan(plan_path), home, conf, cfg,
-                             force=args.force)
-        if result["copied"]:
-            repo = result["repo"]
-            print(f"Adopted {len(result['copied'])} config(s) into {repo}:")
-            for p in result["copied"]:
-                print(f"  + {p}")
-            if result["initialized"]:
-                print(f"Initialized a git repo at {tilde(repo, home)}.")
-            print("Review, then commit when ready:  "
-                  f"git -C {tilde(repo, home)} add -A && git commit -m 'adopt configs'")
-        if result["skipped"]:
-            print(f"Skipped {len(result['skipped'])} (already adopted or unavailable):")
-            for p in result["skipped"]:
-                print(f"  - {p}")
-        if not result["copied"] and not result["skipped"]:
-            print("Nothing to adopt — no entries marked adopt = true in the plan.")
-        return 0
-    # Plan phase: scan, filter to the tier, write the editable plan.
     if shutil.which("pacman") is None:
         die("pacman not found on PATH — this tool needs Arch's pacman for "
             "package-ownership queries (on Arch: sudo pacman -S pacman)")
+    cfg = load_config(args.config or default_config_path())
+    plan_path = args.plan or default_plan_path(conf)
     ensure_repo_scaffold(conf)  # create the repo dir + capture config before writing
     scan_ns = argparse.Namespace(all=False, root=[])
     inv = build_inventory(scan_ns, home, cfg)
@@ -148,7 +159,32 @@ def cmd_adopt(args):
     omitted = omitted_programs(inv, rows)
     write_adopt_plan(plan_path, rows, args.select, tilde(repo_root(conf), home), omitted)
     print(f"Wrote {len(rows)} program(s) to {tilde(plan_path, home)} ({args.select} tier).")
-    print(f"Edit the file, then run:  config-sync adopt --apply --plan {plan_path}")
+    print(f"Edit the file, then run:  config-sync adopt {tilde(plan_path, home)}")
+    return 0
+
+
+def cmd_adopt(args):
+    home = os.path.abspath(require_home())
+    conf = config_home(home)
+    cfg = load_config(args.config or default_config_path())
+    plan_path = args.plan or default_plan_path(conf)
+    result = adopt_apply(load_adopt_plan(plan_path), home, conf, cfg,
+                         force=args.force)
+    if result["copied"]:
+        repo = result["repo"]
+        print(f"Adopted {len(result['copied'])} config(s) into {tilde(repo, home)}:")
+        for p in result["copied"]:
+            print(f"  + {p}")
+        if result["initialized"]:
+            print(f"Initialized a git repo at {tilde(repo, home)}.")
+        print("Review, then commit when ready:  "
+              f"git -C {tilde(repo, home)} add -A && git commit -m 'adopt configs'")
+    if result["skipped"]:
+        print(f"Skipped {len(result['skipped'])} (already adopted or unavailable):")
+        for p in result["skipped"]:
+            print(f"  - {p}")
+    if not result["copied"] and not result["skipped"]:
+        print("Nothing to adopt — no entries marked adopt = true in the plan.")
     return 0
 
 
@@ -231,7 +267,10 @@ def parse_args(argv):
 
     s = sub.add_parser("scan", help="inspect the system and emit an inventory")
     s.add_argument("--json", action="store_true",
-                   help="emit the complete structured inventory (stdout)")
+                   help="emit the complete structured inventory to stdout")
+    s.add_argument("--out", nargs="?", const="", default=None, metavar="PATH",
+                   help="write the JSON inventory to PATH instead of stdout "
+                        "(bare --out uses <repo>/inventory.json)")
     s.add_argument("--generated", action="store_true",
                    help="show machine-generated entries in the listing")
     s.add_argument("--all", action="store_true",
@@ -252,7 +291,9 @@ def parse_args(argv):
     h = sub.add_parser("health",
                        help="render a Markdown health report for a saved "
                             "`scan --json` inventory")
-    h.add_argument("inventory", help="inventory file written by `scan --json`")
+    h.add_argument("inventory", nargs="?",
+                   help="inventory file written by `scan --json` "
+                        "(default: <repo>/inventory.json)")
     h.set_defaults(func=cmd_health)
 
     t = sub.add_parser("tidy",
@@ -262,21 +303,28 @@ def parse_args(argv):
                    help="move the safe candidates into ~/.config (default: report only)")
     t.set_defaults(func=cmd_tidy)
 
+    pl = sub.add_parser("plan",
+                        help="scan the system and write an editable adopt plan "
+                             "(copies nothing)")
+    pl.add_argument("plan", nargs="?", metavar="PATH",
+                    help="plan file to write "
+                         "(default: <repo>/config-sync-adopt.toml)")
+    pl.add_argument("--select", choices=list(ADOPT_TIERS), default="curated",
+                    help="breadth of the generated plan (default: curated)")
+    pl.add_argument("--include", action="append", default=[], metavar="NAME",
+                    help="restrict the plan to these programs/categories (repeatable)")
+    pl.add_argument("--exclude", action="append", default=[], metavar="NAME",
+                    help="drop these programs/categories from the plan (repeatable)")
+    pl.add_argument("--config", metavar="PATH",
+                    help="TOML classification config (default: next to the package)")
+    pl.set_defaults(func=cmd_plan)
+
     a = sub.add_parser("adopt",
-                       help="generate an editable adopt plan (and with --apply, "
-                            "build the dotfiles repo from it)")
-    a.add_argument("--select", choices=list(ADOPT_TIERS), default="curated",
-                   help="breadth of the generated plan (default: curated)")
-    a.add_argument("--include", action="append", default=[], metavar="NAME",
-                   help="restrict the plan to these programs/categories (repeatable)")
-    a.add_argument("--exclude", action="append", default=[], metavar="NAME",
-                   help="drop these programs/categories from the plan (repeatable)")
-    a.add_argument("--plan", metavar="PATH",
-                   help="plan file to write, then read back with --apply "
+                       help="build the dotfiles repo from an edited plan "
+                            "(copies configs in, writes the manifest, git-inits)")
+    a.add_argument("plan", nargs="?", metavar="PATH",
+                   help="plan file to read, written by `config-sync plan` "
                         "(default: <repo>/config-sync-adopt.toml)")
-    a.add_argument("--apply", action="store_true",
-                   help="copy the plan's adopt=true entries into the repo, write "
-                        "the manifest, and git-init the repo (you commit)")
     a.add_argument("--force", action="store_true",
                    help="adopt into a repo that already holds configs (e.g. one "
                         "cloned from another machine); off by default to protect "

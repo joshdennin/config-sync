@@ -84,11 +84,13 @@ than a hard error.
 
 ## 5. Inconsistent mutation verbs across subcommands
 
-**Where:** `cli.py` — `tidy --move`, `adopt --apply`, `link --apply`,
-`unlink --apply`.
+**Where:** `cli.py` — `tidy --move`, `link --apply`, `sync --apply`,
+`unlink --apply` (and `adopt`, which now mutates directly with no gate flag —
+the plan is its review surface and a populated-repo guard protects it).
 
-**Problem:** `tidy` gates its mutation behind `--move` while the others use
-`--apply`. Minor inconsistency in the CLI surface.
+**Problem:** `tidy` gates its mutation behind `--move`, `link`/`sync`/`unlink`
+behind `--apply`, and `adopt` behind nothing. Minor inconsistency in the CLI
+surface.
 
 **Impact:** Cosmetic / UX.
 

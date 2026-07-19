@@ -17,10 +17,10 @@ import tomli_w
 
 from .fsops import (FsError, backup, ensure_parent, remove_symlink, restore,
                     safe_copy, safe_move, safe_symlink)
-from .inventory import (CONFIG_NAME, UNCATEGORIZED, check_installed,
-                        default_config_path, die, display_path, is_adoptable,
-                        ordered_categories, repo_config_path, repo_path_for,
-                        repo_root, tilde)
+from .inventory import (CONFIG_NAME, INVENTORY_NAME, UNCATEGORIZED,
+                        check_installed, default_config_path, die, display_path,
+                        is_adoptable, ordered_categories, repo_config_path,
+                        repo_path_for, repo_root, tilde)
 
 
 # --------------------------------------------------------------------------
@@ -273,11 +273,11 @@ def tidy_move(rows):
 
 
 # --------------------------------------------------------------------------
-# Adopt — build a dotfiles repo from discovered configs, in two phases. Phase
-# one (`adopt`) writes an editable plan file and copies nothing; phase two
-# (`adopt --apply`) reads the edited plan and materializes the repo. The plan
-# is the review surface, so the tier is only a starting breadth — nothing is
-# dropped without the user seeing it.
+# Adopt — build a dotfiles repo from discovered configs, in two phases across
+# two commands. Phase one (`plan`) writes an editable plan file and copies
+# nothing; phase two (`adopt`) reads the edited plan and materializes the repo.
+# The plan is the review surface, so the tier is only a starting breadth —
+# nothing is dropped without the user seeing it.
 
 # Relevance floor per tier (on top of the always-on is_adoptable gate). Tunable.
 ADOPT_TIERS = {"curated": 50, "extended": 15, "everything": 0}
@@ -292,14 +292,15 @@ ADOPT_IGNORE = ("__pycache__", ".venv", GIT_DIR, GITIGNORE_NAME)
 
 # Repo entries that are the tool's own bookkeeping, not adopted program content.
 # Their presence does not make the repo "populated" for the adopt guard, so the
-# config/plan written in the plan phase never blocks the first `adopt --apply`.
+# config/plan/inventory written by `plan`/`scan` never blocks the first `adopt`.
 REPO_BOOKKEEPING = frozenset({
     GIT_DIR, GITIGNORE_NAME, BACKUP_DIRNAME, MANIFEST_NAME, LINK_STATE_NAME,
-    CONFIG_NAME, ADOPT_PLAN_NAME})
+    CONFIG_NAME, ADOPT_PLAN_NAME, INVENTORY_NAME})
 
-# Repo-relative paths kept out of git: the backups tree and the machine-local
-# link state (both are per-machine and must not travel with the shared repo).
-GITIGNORE_LINES = (BACKUP_DIRNAME + "/", LINK_STATE_NAME)
+# Repo-relative paths kept out of git: the backups tree, the machine-local link
+# state, and the scan snapshot (all per-machine — they must not travel with the
+# shared repo).
+GITIGNORE_LINES = (BACKUP_DIRNAME + "/", LINK_STATE_NAME, INVENTORY_NAME)
 
 
 def repo_has_adopted_content(repo):
@@ -421,7 +422,7 @@ def write_adopt_plan(path, rows, tier, repo, omitted=()):
               "# path inside the repo (below) }. managed = true marks a config that\n"
               "# is already its own git repo; adopt is off for those by default —\n"
               "# set adopt = true to copy it in anyway.\n"
-              f"# Then run:  config-sync adopt --apply --plan {path}\n"
+              f"# Then run:  config-sync adopt {path}\n"
               + _omitted_comment(omitted, tier) + "\n")
     data = {"version": ADOPT_PLAN_VERSION, "tier": tier, "repo": repo, "entries": rows}
     with open(path, "wb") as f:
@@ -451,8 +452,9 @@ def expand_home(path, home):
 def git_init(repo):
     """`git init` the repo if it is not one already, so the user has a versionable
     dotfiles repo. That is the only git config-sync runs — staging, committing,
-    pulling, and pushing are always left to the user. Returns whether it inited."""
-    if os.path.isdir(os.path.join(repo, GIT_DIR)):
+    pulling, and pushing are always left to the user. Returns whether it inited;
+    a no-op (and False) when git is not installed, so adopt still succeeds."""
+    if os.path.isdir(os.path.join(repo, GIT_DIR)) or shutil.which("git") is None:
         return False
     subprocess.run(["git", "-C", repo, "init", "-q"], capture_output=True, text=True)
     return True
@@ -589,19 +591,15 @@ def _link_one(entry, home, backups):
     return "linked", home_path
 
 
-def link_apply(manifest, home, conf_home, should_link=None):
+def link_apply(manifest, home, conf_home):
     """Back up + symlink every actionable entry; record link state in the
     (git-ignored) link-state file. Idempotent — already-linked entries are left
-    untouched. When `should_link` is given (used by `sync`), entries it rejects
-    are skipped as "not-installed"."""
+    untouched."""
     ensure_repo_gitignore(repo_root(conf_home))
     backups = backups_root(conf_home)
     linked, skipped = [], []
     changed = False
     for entry in manifest["entries"]:
-        if should_link is not None and not should_link(entry):
-            skipped.append((entry["home_path"], "not-installed"))
-            continue
         outcome, detail = _link_one(entry, home, backups)
         if outcome == "linked":
             linked.append(detail)
@@ -665,9 +663,11 @@ def sync_action(entry, installed):
 def sync_survey(manifest, qq, cfg):
     """Per entry: (entry, installed, action). Re-reads the filesystem, so a
     freshly cloned repo reports what would actually happen."""
-    return [(e, program_installed(e, qq, cfg),
-             sync_action(e, program_installed(e, qq, cfg)))
-            for e in manifest["entries"]]
+    rows = []
+    for e in manifest["entries"]:
+        installed = program_installed(e, qq, cfg)
+        rows.append((e, installed, sync_action(e, installed)))
+    return rows
 
 
 def sync_apply(manifest, home, conf_home, qq, cfg, force=False):

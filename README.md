@@ -8,13 +8,15 @@ step. The repo is designed to be **shared across machines**: push it from one
 box, clone it on another, and `sync` deploys the configs whose programs are
 actually installed there.
 
-Discovery is always **read-only**. Every mutation is opt-in, copies before it
-touches the original, and is reversible — no operation ever destroys the only
-copy of anything.
+Discovery never changes your configs — it only reads them (the artifacts it
+writes on request, a `scan --out` inventory and the `plan` file, land in the
+repo, never over your originals). Every mutation of a config is opt-in, copies
+before it touches the original, and is reversible — no operation ever destroys
+the only copy of anything.
 
 ## Install
 
-Requires Python 3.11+ and, for `scan` / `adopt` / `sync`, `pacman` on `PATH`
+Requires Python 3.11+ and, for `scan` / `plan` / `sync`, `pacman` on `PATH`
 (used for package-ownership and install queries). The only third-party
 dependency is `tomli-w`.
 
@@ -29,13 +31,20 @@ equivalent.
 
 | Command | What it does | Writes? |
 |---------|--------------|---------|
-| `scan` | Discover config entries, classify them, print a report (or `--json`). | no |
-| `health` | Render a `:checkhealth`-style report from a saved `scan --json`. | no |
+| `scan` | Discover config entries, classify them, print a report (`--json` to stdout). | inventory file, only with `--out` |
+| `health` | Render a `:checkhealth`-style report from a saved `scan --out`. | no |
 | `tidy` | Relocate a safe set of `$HOME` config files into `~/.config`. | only with `--move` |
-| `adopt` | Write an editable plan, then copy chosen configs into a managed repo. | only with `--apply` |
+| `plan` | Scan and write an editable plan of the configs to adopt. | the plan file |
+| `adopt` | Copy the plan's chosen configs into the managed repo and `git init` it. | yes |
 | `link` | Back up each home original and symlink it to the repo copy. | only with `--apply` |
 | `sync` | Deploy a repo (e.g. cloned from another machine): symlink the configs whose program is installed here, and unlink any whose program is gone. | only with `--apply` |
 | `unlink` | Remove the symlinks and restore the backed-up originals. | only with `--apply` |
+
+`scan --json` streams the inventory to stdout (pipe it to `jq`, redirect it
+anywhere). The file-based commands default into the managed repo at
+`~/.config/config-sync/`: `scan --out` writes `inventory.json` there and
+`health` reads it; `plan` writes `config-sync-adopt.toml` there and `adopt`
+reads it. Every one takes an explicit path to override the default.
 
 Run `config-sync <command> --help` for the full flag set.
 
@@ -48,9 +57,10 @@ into a repo, deploy them as symlinks, then roll the whole thing back.
 # 1. See what's on the box (human-readable listing).
 config-sync scan
 
-# 2. Save the full structured inventory, then health-check it offline.
-config-sync scan --json > inventory.json
-config-sync health inventory.json
+# 2. Save the full structured inventory (to ~/.config/config-sync/inventory.json),
+#    then health-check it offline. (`scan --json` streams to stdout instead.)
+config-sync scan --out
+config-sync health
 
 # 3. (optional) Move stray $HOME config into ~/.config where it belongs.
 config-sync tidy            # preview the safe relocations
@@ -59,7 +69,7 @@ config-sync tidy --move     # perform them
 # 4. Plan a dotfiles repo from the strong-signal configs. This creates the
 #    repo directory, captures the classification config and an editable plan
 #    inside it, and copies nothing else. The plan defaults into the repo.
-config-sync adopt --select curated
+config-sync plan --select curated
 
 # 5. Edit the plan: set `adopt = false` on anything you want to skip.
 $EDITOR ~/.config/config-sync/config-sync-adopt.toml
@@ -67,7 +77,7 @@ $EDITOR ~/.config/config-sync/config-sync-adopt.toml
 # 6. Build the repo at ~/.config/config-sync/ from the edited plan (copies
 #    originals in, writes a manifest, and `git init`s the repo). It never
 #    commits — review the result and commit yourself:
-config-sync adopt --apply
+config-sync adopt
 git -C ~/.config/config-sync add -A && git commit -m 'adopt configs'
 
 # 7. Deploy the repo back into place: each original is backed up, then
@@ -91,8 +101,8 @@ The repo built by `adopt` is a portable dotfiles repo — its `manifest.toml`
 stores machine-independent paths (`~/`-relative home, repo-relative repo), so it
 resolves against any `$HOME`.
 
-`adopt --apply` leaves you a `git init`'d repo but makes no commits — you own
-the git history:
+`adopt` leaves you a `git init`'d repo but makes no commits — you own the git
+history:
 
 ```sh
 # On the source machine: commit, then push the repo somewhere you can reach it.
@@ -116,9 +126,9 @@ home ⇄ repo mapping, while machine-local link state lives in a git-ignored
 and a later `git -C ~/.config/config-sync pull` updates every config in place
 (they're symlinks into the repo) without conflicts.
 
-To protect a shared repo, `adopt --apply` **refuses to copy local configs into a
-repo that already holds adopted content** (one you cloned, or already built).
-Pass `adopt --apply --force` to add to it deliberately.
+To protect a shared repo, `adopt` **refuses to copy local configs into a repo
+that already holds adopted content** (one you cloned, or already built). Pass
+`adopt --force` to add to it deliberately.
 
 ## Configuration
 
@@ -128,19 +138,20 @@ in `inventory-config.toml` (shipped with the package), not in the code. Teaching
 the tool a new program or secret store is a file edit. Point at your own copy
 with `scan --config PATH`.
 
-`adopt` captures a copy of this config inside the repo
+`plan` captures a copy of this config inside the repo
 (`~/.config/config-sync/inventory-config.toml`) so a clone carries the registry
-it was built with. `scan` and `adopt` read the package copy; `sync` prefers the
-repo's captured copy so a freshly cloned repo classifies consistently. Existing
-captured copies are never overwritten.
+it was built with. `scan`, `plan`, and `adopt` read the package copy; `sync`
+prefers the repo's captured copy so a freshly cloned repo classifies
+consistently. Existing captured copies are never overwritten.
 
 ## Safety
 
-- `scan` and `health` never write, move, or delete — their only side effects are
-  filesystem reads and read-only `pacman` / `git` queries.
-- Every write goes through primitives that refuse to overwrite or delete
-  existing state; `adopt` copies (originals untouched) and `tidy --move` only
-  relocates when the target is absent.
+- `scan` and `health` never touch your configs — their only side effects are
+  filesystem reads, read-only `pacman` / `git` queries, and (for `scan --out`)
+  writing the inventory artifact into the repo.
+- Every write to a config goes through primitives that refuse to overwrite or
+  delete existing state; `adopt` copies (originals untouched) and `tidy --move`
+  only relocates when the target is absent.
 - `adopt` never copies secrets (`.ssh`, `.gnupg`, `.aws`, …), dangling links,
   generated/cache/state content, or the managed repo itself. When it copies a
   directory it strips `.git`, `.gitignore`, `.venv`, and `__pycache__`, so a
@@ -149,7 +160,7 @@ captured copies are never overwritten.
 - Configs that are already their own git repo are surfaced in the plan flagged
   `managed = true` with `adopt = false` — visible for review but opt-in, never
   copied unless you turn `adopt` on.
-- `adopt --apply` refuses to add to a repo that already holds adopted content
+- `adopt` refuses to add to a repo that already holds adopted content
   (protecting a shared/cloned repo) unless given `--force`.
 - `link` backs up before it symlinks and is atomic — a failed link restores the
   original rather than leaving it stranded. `sync` links only configs whose
