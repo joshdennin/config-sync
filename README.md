@@ -33,9 +33,9 @@ equivalent.
 |---------|--------------|---------|
 | `scan` | Discover config entries, classify them, print a report (`--json` to stdout). | inventory file, only with `--out` |
 | `health` | Render a `:checkhealth`-style report from a saved `scan --out`, plus the live state of the managed repo and whether each adopted config is linked. | no |
-| `tidy` | Relocate a safe set of `$HOME` config files into `~/.config`. | only with `--move` |
+| `tidy` | Relocate a safe set of `$HOME` config files into `~/.config`. | only with `--apply` |
 | `plan` | Scan and write an editable plan of the configs to adopt. | the plan file |
-| `adopt` | Copy the plan's chosen configs into the managed repo and `git init` it. | yes |
+| `adopt` | Copy the plan's chosen configs into the managed repo and `git init` it. | only with `--apply` |
 | `link` | Back up each home original and symlink it to the repo copy. | only with `--apply` |
 | `sync` | Deploy a repo (e.g. cloned from another machine): symlink the configs whose program is installed here, and unlink any whose program is gone. | only with `--apply` |
 | `unlink` | Remove the symlinks and restore the backed-up originals. | only with `--apply` |
@@ -64,7 +64,7 @@ config-sync health
 
 # 3. (optional) Move stray $HOME config into ~/.config where it belongs.
 config-sync tidy            # preview the safe relocations
-config-sync tidy --move     # perform them
+config-sync tidy --apply    # perform them
 
 # 4. Plan a dotfiles repo from the strong-signal configs. This creates the
 #    repo directory, captures the classification config and an editable plan
@@ -77,7 +77,8 @@ $EDITOR ~/.config/config-sync/config-sync-adopt.toml
 # 6. Build the repo at ~/.config/config-sync/ from the edited plan (copies
 #    originals in, writes a manifest, and `git init`s the repo). It never
 #    commits — review the result and commit yourself:
-config-sync adopt
+config-sync adopt           # preview what would be adopted
+config-sync adopt --apply   # copy the chosen configs in
 git -C ~/.config/config-sync add -A && git commit -m 'adopt configs'
 
 # 7. Deploy the repo back into place: each original is backed up, then
@@ -149,9 +150,11 @@ consistently. Existing captured copies are never overwritten.
 - `scan` and `health` never touch your configs — their only side effects are
   filesystem reads, read-only `pacman` / `git` queries, and (for `scan --out`)
   writing the inventory artifact into the repo.
+- Every mutating command is dry-run by default and acts only with `--apply`
+  (`tidy`, `adopt`, `link`, `sync`, `unlink`).
 - Every write to a config goes through primitives that refuse to overwrite or
-  delete existing state; `adopt` copies (originals untouched) and `tidy --move`
-  only relocates when the target is absent.
+  delete existing state; `adopt --apply` copies (originals untouched) and `tidy
+  --apply` only relocates when the target is absent.
 - `adopt` never copies secrets (`.ssh`, `.gnupg`, `.aws`, …), dangling links,
   generated/cache/state content, or the managed repo itself. When it copies a
   directory it strips `.git`, `.gitignore`, `.venv`, and `__pycache__`, so a

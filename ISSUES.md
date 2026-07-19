@@ -85,20 +85,26 @@ than a hard error.
 
 ---
 
-## 5. Inconsistent mutation verbs across subcommands
+## 5. Inconsistent mutation verbs across subcommands ✅ RESOLVED
 
 **Where:** `cli.py` — `tidy --move`, `link --apply`, `sync --apply`,
-`unlink --apply` (and `adopt`, which now mutates directly with no gate flag —
-the plan is its review surface and a populated-repo guard protects it).
+`unlink --apply`, and `adopt` (which mutated directly with no gate flag).
 
-**Problem:** `tidy` gates its mutation behind `--move`, `link`/`sync`/`unlink`
-behind `--apply`, and `adopt` behind nothing. Minor inconsistency in the CLI
-surface.
+**Problem:** `tidy` gated its mutation behind `--move`, `link`/`sync`/`unlink`
+behind `--apply`, and `adopt` behind nothing — three conventions for one idea,
+so the CLI surface was unpredictable.
 
 **Impact:** Cosmetic / UX.
 
-**Suggested fix:** Standardize on one convention (a uniform `--apply`, or a
-uniform `--dry-run`-defaults model) across all mutating commands.
+**Resolution:** Standardized on a single rule — **report by default, act only
+with `--apply`** — across every mutating command. `tidy --move` became
+`tidy --apply` (with `--move` kept as a hidden, deprecated alias via
+`dest="apply"`), and `adopt` gained an `--apply` flag: its default is now a dry
+run (`adopt_survey`) that reports the copy/skip split without writing and flags
+up front whether the populated-repo guard would block it. The read-only planning
+core is shared by `adopt_survey` and `adopt_apply` (`_adopt_items`) so the
+preview cannot drift from the real run. Covered by `test_survey_previews_without_writing`
+and `test_survey_flags_a_blocked_populated_repo`.
 
 ---
 

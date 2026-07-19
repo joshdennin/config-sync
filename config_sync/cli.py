@@ -7,13 +7,14 @@ health — read a saved `scan --json` inventory (default <repo>/inventory.json) 
          print a Markdown checkhealth-style report (inspired by :checkhealth),
          including the live state of the managed repo (built? committed?) and
          whether each adopted config is currently linked into place
-tidy   — report (and with --move, perform) safe XDG relocations of a
+tidy   — report (and with --apply, perform) safe XDG relocations of a
          conservative "Tier 1" set of HOME config files into ~/.config
 plan   — scan and write an editable plan of discovered configs (curated/extended/
          everything tier) to <repo>/config-sync-adopt.toml; copies nothing
 adopt  — read the (edited) plan and build the managed repo at ~/.config/config-sync/:
-         copy the plan's entries in, write the manifest, and `git init` the repo
-         (staging/commit/push are left to you)
+         report what would be adopted (and with --apply, copy the plan's entries
+         in, write the manifest, and `git init` the repo — staging/commit/push
+         are left to you)
 link   — report (and with --apply, perform) symlinking of adopted configs from
          the repo back into place, backing up each original first
 sync   — deploy a repo (typically cloned from another machine): report (and with
@@ -39,7 +40,7 @@ health arguments:
   inventory            inventory written by `scan --json` (default <repo>/inventory.json)
 
 tidy flags:
-  --move               move the safe candidates into ~/.config (default: report)
+  --apply              move the safe candidates into ~/.config (default: report)
 
 plan flags:
   plan                 plan file to write (default <repo>/config-sync-adopt.toml)
@@ -50,6 +51,7 @@ plan flags:
 
 adopt flags:
   plan                 plan file to read (default <repo>/config-sync-adopt.toml)
+  --apply              copy the plan's entries in (default: report the plan only)
   --force              adopt into an already-populated (e.g. cloned) repo
   --config PATH        TOML classification config
 
@@ -63,11 +65,12 @@ sync flags:
 
 Discovery never writes, moves, or deletes your configs; the only side effects are
 filesystem reads, read-only `pacman` / `git` queries, and the artifacts commands
-write on request (`scan --out`'s inventory file, `plan`'s plan file). `tidy` is
-read-only unless given --move; `link`/`sync`/`unlink` are read-only unless given
---apply. Every config mutation goes through the fsops primitives, which refuse to
-overwrite or delete: `adopt` copies (originals are left untouched) and `tidy
---move` only relocates when the target is absent.
+write on request (`scan --out`'s inventory file, `plan`'s plan file). Every
+mutating command follows one rule: report by default, act only with --apply
+(`tidy`, `adopt`, `link`, `sync`, `unlink`). Every config mutation goes through
+the fsops primitives, which refuse to overwrite or delete: `adopt --apply` copies
+(originals are left untouched) and `tidy --apply` only relocates when the target
+is absent.
 """
 
 import argparse
@@ -82,7 +85,7 @@ from .inventory import (ConfigSyncError, build_inventory, config_home,
                         require_home, tilde)
 from .report import REPORTERS
 from .sync import (ADOPT_TIERS, LINK_STATUS, SYNC_STATUS, UNLINK_STATUS,
-                   adopt_apply, adopt_candidates, adopt_plan_rows,
+                   adopt_apply, adopt_candidates, adopt_plan_rows, adopt_survey,
                    default_plan_path, ensure_repo_scaffold, link_apply,
                    link_report, link_survey, load_adopt_plan, load_manifest,
                    omitted_programs, repo_health, sync_apply, sync_report,
@@ -140,7 +143,7 @@ def cmd_health(args):
 def cmd_tidy(args):
     home = require_home()
     rows = tidy_survey(home, config_home(home))
-    if args.move:
+    if args.apply:
         tidy_move(rows)
     else:
         tidy_report(rows)
@@ -173,8 +176,27 @@ def cmd_adopt(args):
     conf = config_home(home)
     cfg = load_config(args.config or default_config_path())
     plan_path = args.plan or default_plan_path(conf)
-    result = adopt_apply(load_adopt_plan(plan_path), home, conf, cfg,
-                         force=args.force)
+    plan = load_adopt_plan(plan_path)
+    if not args.apply:  # dry run: report what would be copied, write nothing
+        survey = adopt_survey(plan, home, conf, cfg, force=args.force)
+        repo = survey["repo"]
+        if survey["blocked"]:
+            print(f"{tilde(repo, home)} already holds adopted configs — `adopt` "
+                  "would refuse without --force.")
+        if survey["copied"]:
+            print(f"Would adopt {len(survey['copied'])} config(s) into {tilde(repo, home)}:")
+            for p in survey["copied"]:
+                print(f"  + {p}")
+        if survey["skipped"]:
+            print(f"Would skip {len(survey['skipped'])} (already adopted or present):")
+            for p in survey["skipped"]:
+                print(f"  - {p}")
+        if not survey["copied"] and not survey["skipped"]:
+            print("Nothing to adopt — no entries marked adopt = true in the plan.")
+        elif survey["copied"]:
+            print(f"\n{len(survey['copied'])} to adopt · run with --apply to copy them in.")
+        return 0
+    result = adopt_apply(plan, home, conf, cfg, force=args.force)
     if result["copied"]:
         repo = result["repo"]
         print(f"Adopted {len(result['copied'])} config(s) into {tilde(repo, home)}:")
@@ -302,10 +324,12 @@ def parse_args(argv):
     h.set_defaults(func=cmd_health)
 
     t = sub.add_parser("tidy",
-                       help="report (and optionally perform) safe XDG "
+                       help="report (and with --apply, perform) safe XDG "
                             "relocations of Tier 1 config files")
-    t.add_argument("--move", action="store_true",
+    t.add_argument("--apply", action="store_true",
                    help="move the safe candidates into ~/.config (default: report only)")
+    t.add_argument("--move", dest="apply", action="store_true",
+                   help=argparse.SUPPRESS)  # deprecated alias for --apply
     t.set_defaults(func=cmd_tidy)
 
     pl = sub.add_parser("plan",
@@ -326,10 +350,14 @@ def parse_args(argv):
 
     a = sub.add_parser("adopt",
                        help="build the dotfiles repo from an edited plan "
-                            "(copies configs in, writes the manifest, git-inits)")
+                            "(with --apply: copies configs in, writes the "
+                            "manifest, git-inits)")
     a.add_argument("plan", nargs="?", metavar="PATH",
                    help="plan file to read, written by `config-sync plan` "
                         "(default: <repo>/config-sync-adopt.toml)")
+    a.add_argument("--apply", action="store_true",
+                   help="copy the plan's entries into the repo "
+                        "(default: report what would be adopted)")
     a.add_argument("--force", action="store_true",
                    help="adopt into a repo that already holds configs (e.g. one "
                         "cloned from another machine); off by default to protect "

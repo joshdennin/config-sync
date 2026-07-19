@@ -117,28 +117,29 @@ library modules importable and unit-testable.
 config-sync scan   [--json] [--out [PATH]] [--generated] [--all] [--secrets]
                    [--only-orphans] [--min-relevance N] [--root PATH ...] [--config PATH]
 config-sync health [inventory]
-config-sync tidy   [--move]
+config-sync tidy   [--apply]
 config-sync plan   [PATH] [--select curated|extended|everything]
                    [--include NAME ...] [--exclude NAME ...] [--config PATH]
-config-sync adopt  [PATH] [--force] [--config PATH]
+config-sync adopt  [PATH] [--apply] [--force] [--config PATH]
 config-sync link   [--apply]
 config-sync sync   [--apply] [--force] [--config PATH]
 config-sync unlink [--apply]
 ```
 
 Read-only unless told otherwise: `scan` streams (or, with `--out`, writes) an
-inventory but never touches configs, and `health` never writes; `tidy` is
-read-only without `--move`; `plan` writes only a plan file; `adopt` mutates
-directly (the plan is its review surface); `link`/`sync`/`unlink` report a plan
-without `--apply`.
+inventory but never touches configs, and `health` never writes; `plan` writes
+only a plan file. Every mutating command follows the same rule — **report by
+default, act only with `--apply`** — so `tidy`, `adopt`, `link`, `sync`, and
+`unlink` are all dry-run by default. (`adopt` also has the edited plan file as a
+prior review surface, and a populated-repo guard the dry run surfaces up front.)
 
 | Command | Role |
 |---------|------|
 | `scan` | Inspect the system and emit an inventory (default: human listing; `--json`: full structured record to stdout; `--out`: that record to a file). |
 | `health` | Read a saved `scan --out` inventory (default `<repo>/inventory.json`) and render a Markdown `:checkhealth`-style report, plus a live "Managed repo" section (repo built/committed? each adopted config linked?). Never scans. |
-| `tidy` | Report (and with `--move`, perform) a conservative set of transparent XDG relocations of `$HOME` config files into `~/.config`. |
+| `tidy` | Report (and with `--apply`, perform) a conservative set of transparent XDG relocations of `$HOME` config files into `~/.config`. |
 | `plan` | Scan discovered configs and write an editable adopt plan. Copies nothing. |
-| `adopt` | Read the (edited) plan and materialize the repo: copy the plan's entries in, write the manifest, `git init` (never commit). |
+| `adopt` | Report (and with `--apply`, materialize) the repo from the edited plan: copy the plan's entries in, write the manifest, `git init` (never commit). |
 | `sync` | Deploy a repo onto this host: link the configs whose program is installed, unlink one whose program is gone. Report without `--apply`. |
 | `link` | Deploy the repo back into place: back up each home original and replace it with a symlink into the repo. |
 | `unlink` | Reverse `link`: remove the symlink and restore the backed-up original. |
@@ -416,12 +417,12 @@ as `""`.
 
 ### tidy
 
-Reports (and with `--move`, performs) a conservative "Tier 1" set of XDG
+Reports (and with `--apply`, performs) a conservative "Tier 1" set of XDG
 relocations: `$HOME` config files whose program reads the `~/.config` location
 *automatically* — no env var, wrapper, or sourced stub — so the move is
 transparent (e.g. `.gitconfig` → `git/config`, `.tmux.conf` → `tmux/tmux.conf`).
 A candidate moves only when its target is absent; a symlinked source is reported
-but never moved. Orthogonal to the repo workflow, and read-only without `--move`.
+but never moved. Orthogonal to the repo workflow, and read-only without `--apply`.
 
 ### plan / adopt
 
@@ -430,7 +431,7 @@ to a breadth tier, and writes an **editable plan file** (copying nothing); the
 plan is the review-and-choose surface, so nothing is silently dropped. `adopt`
 reads the edited plan and materializes the repo.
 
-Tiers seed the plan on top of the always-on `is_adoptable` gate, as a tunable
+Tiers seed the plan on top of the always-on `safe_to_adopt` gate, as a tunable
 relevance floor: `curated` (≥ 50, default), `extended` (≥ 15), `everything`
 (≥ 0). An entry already its own git repo bypasses the floor and is surfaced
 with `adopt = false` and a comment marking it as already tracked in its own repo
@@ -438,14 +439,16 @@ with `adopt = false` and a comment marking it as already tracked in its own repo
 editable field) — visible for review but opt-in, never copied unless the user
 turns `adopt` on. `--include` / `--exclude`
 (program or category names) pre-narrow candidates; the plan's per-entry
-`adopt = true/false` is the final say. `adopt` **copies** each `adopt=true`
-entry into the repo via `fsops` (originals untouched), merges the manifest, and
-`git init`s a not-yet-versioned repo — the only git it runs; staging, commits,
-and pushes are the user's. It is re-runnable (entries already in the manifest or
-present in the repo are skipped) and refuses to add to a repo that already holds
-adopted content unless `--force`, protecting a shared/cloned repo. Both commands
-default their plan path to `<repo>/config-sync-adopt.toml`; a path argument
-overrides.
+`adopt = true/false` is the final say. `adopt` is dry-run by default — it reports
+the copy/skip split (`adopt_survey`, writing nothing) and flags up front whether
+a populated-repo guard would block it. With `--apply` it **copies** each
+`adopt=true` entry into the repo via `fsops` (originals untouched), merges the
+manifest, and `git init`s a not-yet-versioned repo — the only git it runs;
+staging, commits, and pushes are the user's. It is re-runnable (entries already
+in the manifest or present in the repo are skipped) and refuses to add to a repo
+that already holds adopted content unless `--force`, protecting a shared/cloned
+repo. Both commands default their plan path to `<repo>/config-sync-adopt.toml`; a
+path argument overrides.
 
 ### link
 

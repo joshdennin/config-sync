@@ -253,7 +253,7 @@ def tidy_report(rows, moved=False):
     if not moved:
         print()
         if movable:
-            print(f"{movable} movable · run with --move to relocate them.")
+            print(f"{movable} movable · run with --apply to relocate them.")
         else:
             print("Nothing to move.")
 
@@ -479,6 +479,45 @@ def git_init(repo):
     return True
 
 
+def _adopt_items(plan, home, conf_home, cfg):
+    """Classify each adopt=true path in the plan (read-only), yielding
+    ("copy"|"skip", disp, home_path, repo_path, program, kind). "skip" means the
+    path is already adopted (in the manifest) or already present at its repo
+    target. Shared by adopt_survey (the dry run) and adopt_apply, so the preview
+    and the real run make identical per-path decisions. kind is read from the
+    filesystem here (the plan no longer stores it) so it matches what is on disk
+    now. A home_path is remembered once classified "copy", so the same path
+    listed twice in a plan is copied once."""
+    known = {e["home_path"] for e in load_manifest(conf_home, home)["entries"]}
+    for entry in plan["entries"]:
+        if not entry.get("adopt", False):
+            continue
+        program = entry.get("program") or None
+        for p in entry.get("paths", []):
+            disp = p["home"]
+            home_path = expand_home(disp, home)
+            kind = "dir" if os.path.isdir(home_path) else "file"
+            repo_path = repo_path_for(home_path, kind, program, cfg, conf_home)
+            if home_path in known or os.path.lexists(repo_path):
+                yield "skip", disp, home_path, repo_path, program, kind
+            else:
+                known.add(home_path)
+                yield "copy", disp, home_path, repo_path, program, kind
+
+
+def adopt_survey(plan, home, conf_home, cfg, force=False):
+    """What `adopt --apply` would do, computed without writing anything. Returns
+    {copied, skipped, repo, blocked}: `copied` is the would-copy list, `skipped`
+    the already-adopted/present list, and `blocked` is True when the repo already
+    holds adopted content and `force` is not set (adopt would refuse)."""
+    copied, skipped = [], []
+    for status, disp, *_ in _adopt_items(plan, home, conf_home, cfg):
+        (copied if status == "copy" else skipped).append(disp)
+    blocked = repo_has_adopted_content(repo_root(conf_home)) and not force
+    return {"copied": copied, "skipped": skipped,
+            "repo": repo_root(conf_home), "blocked": blocked}
+
+
 def adopt_apply(plan, home, conf_home, cfg, force=False):
     """Copy the plan's adopt=true entries into the repo and merge the manifest.
     Re-runnable: entries already recorded or already present are skipped. The only
@@ -494,30 +533,19 @@ def adopt_apply(plan, home, conf_home, cfg, force=False):
             "Deploy it with `config-sync sync` instead, or pass --force to add "
             "local configs anyway.")
     manifest = load_manifest(conf_home, home)
-    known = {e["home_path"] for e in manifest["entries"]}
     copied, skipped = [], []
-    for entry in plan["entries"]:
-        if not entry.get("adopt", False):
+    for status, disp, home_path, repo_path, program, kind in \
+            _adopt_items(plan, home, conf_home, cfg):
+        if status == "skip":
+            skipped.append(disp)
             continue
-        program = entry.get("program") or None
-        for p in entry.get("paths", []):
-            disp = p["home"]
-            home_path = expand_home(disp, home)
-            # kind is read from the filesystem at apply time (the plan no longer
-            # stores it) so it always matches what is actually on disk now.
-            kind = "dir" if os.path.isdir(home_path) else "file"
-            repo_path = repo_path_for(home_path, kind, program, cfg, conf_home)
-            if home_path in known or os.path.lexists(repo_path):
-                skipped.append(disp)
-                continue
-            try:
-                safe_copy(home_path, repo_path, ignore=ADOPT_IGNORE)
-            except (FsError, OSError) as e:
-                skipped.append(f"{disp} ({e})")
-                continue
-            manifest["entries"].append(manifest_entry(program, home_path, repo_path, kind))
-            known.add(home_path)
-            copied.append(disp)
+        try:
+            safe_copy(home_path, repo_path, ignore=ADOPT_IGNORE)
+        except (FsError, OSError) as e:
+            skipped.append(f"{disp} ({e})")
+            continue
+        manifest["entries"].append(manifest_entry(program, home_path, repo_path, kind))
+        copied.append(disp)
     initialized = False
     if copied:
         save_manifest(conf_home, manifest, home)

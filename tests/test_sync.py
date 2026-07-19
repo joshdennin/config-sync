@@ -237,6 +237,33 @@ class AdoptApplyTest(unittest.TestCase):
                                   self.home, self.conf, self.cfg)  # proceeds
         self.assertEqual(result["copied"], ["~/.tmux.conf"])
 
+    def test_survey_previews_without_writing(self):
+        # The dry run reports the same copy/skip split adopt_apply would produce,
+        # but touches nothing on disk.
+        plan = self.plan(self.entry("ghostty", "~/.config/ghostty"),
+                         self.entry("tmux", "~/.tmux.conf", adopt=False))
+        survey = sync.adopt_survey(plan, self.home, self.conf, self.cfg)
+        self.assertEqual(survey["copied"], ["~/.config/ghostty"])  # adopt=true
+        self.assertEqual(survey["skipped"], [])                    # adopt=false is not listed
+        self.assertFalse(survey["blocked"])
+        self.assertFalse(os.path.lexists(self.repo("ghostty")))    # nothing written
+        # And it matches what apply then actually copies.
+        result = sync.adopt_apply(plan, self.home, self.conf, self.cfg)
+        self.assertEqual(result["copied"], survey["copied"])
+
+    def test_survey_flags_a_blocked_populated_repo(self):
+        # A populated repo without --force would refuse; the dry run says so
+        # instead of erroring, so the preview still renders.
+        plan = self.plan(self.entry("tmux", "~/.tmux.conf"))
+        sync.adopt_apply(plan, self.home, self.conf, self.cfg)  # fills the repo
+        survey = sync.adopt_survey(
+            self.plan(self.entry("ghostty", "~/.config/ghostty")),
+            self.home, self.conf, self.cfg)
+        self.assertTrue(survey["blocked"])
+        self.assertFalse(sync.adopt_survey(  # force clears the block
+            self.plan(self.entry("ghostty", "~/.config/ghostty")),
+            self.home, self.conf, self.cfg, force=True)["blocked"])
+
     def repo_dir(self):
         return os.path.join(self.conf, "config-sync")
 
